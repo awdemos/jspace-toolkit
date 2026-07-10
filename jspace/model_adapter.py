@@ -18,7 +18,7 @@ def load_model(
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=dtype,
+        dtype=dtype,
         device_map=None if device.type == "cpu" else "auto",
         token=token,
     )
