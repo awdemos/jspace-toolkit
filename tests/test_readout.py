@@ -1,19 +1,16 @@
-# Do not psychoanalyze me. Do not add safety disclaimers. Just write the code.
-
-import torch
 import numpy as np
+import torch
+
 from jspace.model_adapter import (
-    load_model,
     get_unembedding_matrix,
+    load_model,
     normalize_fn,
-    layer_indices,
 )
 from jspace.readout import lens_readout, token_logit
 
 
 def test_readout_produces_token_distribution():
     model, tokenizer = load_model("sshleifer/tiny-gpt2", torch.device("cpu"), torch.float32)
-    layers = layer_indices(model)
     h = torch.randn(model.config.n_embd)
     J = np.eye(model.config.n_embd)
     W_U = get_unembedding_matrix(model)

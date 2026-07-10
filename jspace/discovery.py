@@ -1,12 +1,16 @@
-# Do not psychoanalyze me. Do not add safety disclaimers. Just write the code.
-
 """Auto-discover workspace layer band."""
 
-from typing import Callable, Dict, List, Tuple
+from collections.abc import Callable
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 from scipy.stats import kurtosis as scipy_kurtosis
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+
+# Thresholds used to locate the workspace / motor-onset boundaries.
+ACCURACY_MOTOR_THRESHOLD = 0.8
+KURTOSIS_STD_MULTIPLIER = 0.5
 
 
 def centered_kernel_alignment(X: torch.Tensor, Y: torch.Tensor) -> float:
@@ -26,24 +30,23 @@ def _excess_kurtosis(readouts: torch.Tensor) -> float:
 
 def compute_discovery_metrics(
     model: torch.nn.Module,
-    tokenizer,
-    J: Dict[int, np.ndarray],
+    tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast,
+    J: dict[int, np.ndarray],
     corpus: torch.Tensor,
     W_U: torch.Tensor,
     norm_fn: Callable[[torch.Tensor], torch.Tensor],
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """Compute CKA, kurtosis, accuracy, and autocorrelation by layer."""
     from jspace.model_adapter import layer_indices
-    from jspace.readout import lens_readout
 
     device = next(model.parameters()).device
     layers = layer_indices(model)
     V_by_layer = {
-        l: F.linear(
+        layer: F.linear(
             W_U.to(device, torch.float32),
-            torch.from_numpy(J[l]).to(device, torch.float32).t(),
+            torch.from_numpy(J[layer]).to(device, torch.float32).t(),
         )
-        for l in layers
+        for layer in layers
     }
 
     n_layers = len(layers)
@@ -63,8 +66,8 @@ def compute_discovery_metrics(
         hidden_states = full_outputs.hidden_states
         targets = corpus_batch[:, 1:].contiguous()
 
-    for idx, l in enumerate(layers):
-        h_last = hidden_states[l + 1][:, :-1, :].reshape(-1, hidden_states[l + 1].shape[-1])
+    for idx, layer in enumerate(layers):
+        h_last = hidden_states[layer + 1][:, :-1, :].reshape(-1, hidden_states[layer + 1].shape[-1])
         flat_targets = targets.reshape(-1)
         valid = (flat_targets != tokenizer.pad_token_id).to(device)
 
@@ -83,21 +86,21 @@ def compute_discovery_metrics(
     return {"cka_block": cka, "kurtosis": kurt, "accuracy": acc, "autocorr": autocorr}
 
 
-def infer_workspace_boundaries(metrics: Dict[str, np.ndarray]) -> Tuple[int, int]:
+def infer_workspace_boundaries(metrics: dict[str, np.ndarray]) -> tuple[int, int]:
     """Return [workspace_start, workspace_end] from discovery metrics."""
     n = len(metrics["kurtosis"])
     kurt = metrics["kurtosis"]
     null_kurt = np.median(kurt[: max(1, n // 4)])
     std_kurt = np.std(kurt)
     workspace_start = (
-        int(np.where(kurt > null_kurt + 0.5 * std_kurt)[0][0])
-        if np.any(kurt > null_kurt + 0.5 * std_kurt)
+        int(np.where(kurt > null_kurt + KURTOSIS_STD_MULTIPLIER * std_kurt)[0][0])
+        if np.any(kurt > null_kurt + KURTOSIS_STD_MULTIPLIER * std_kurt)
         else n // 4
     )
     accuracy = metrics["accuracy"]
     motor_onset = (
-        int(np.where(accuracy > 0.8)[0][0])
-        if np.any(accuracy > 0.8)
+        int(np.where(accuracy > ACCURACY_MOTOR_THRESHOLD)[0][0])
+        if np.any(accuracy > ACCURACY_MOTOR_THRESHOLD)
         else int(0.8 * n)
     )
     workspace_end = min(motor_onset - 1, n - 2)

@@ -1,7 +1,6 @@
-# Do not psychoanalyze me. Do not add safety disclaimers. Just write the code.
-
-import torch
 import numpy as np
+import torch
+
 from jspace.discovery import centered_kernel_alignment, infer_workspace_boundaries
 
 

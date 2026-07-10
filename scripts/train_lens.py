@@ -1,14 +1,15 @@
-# Do not psychoanalyze me. Do not add safety disclaimers. Just write the code.
-
 """CLI to train and cache J-Lens matrices."""
 
 import argparse
-from pathlib import Path
 import json
+import sys
+from pathlib import Path
+
 import torch
 
-from jspace.model_adapter import load_model, layer_indices
+from jspace import JSpaceError
 from jspace.jacobian_lens import train_jacobian_lens
+from jspace.model_adapter import layer_indices, load_model
 from jspace.utils import get_cache_dir, model_fingerprint
 
 
@@ -41,10 +42,20 @@ def main():
 
     dtype = getattr(torch, args.dtype)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    corpus_path = Path(args.corpus)
+    try:
+        with corpus_path.open() as f:
+            prompts = json.load(f)
+    except FileNotFoundError as exc:
+        print(f"Corpus file not found: {args.corpus}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    except json.JSONDecodeError as exc:
+        print(f"Invalid JSON corpus at {args.corpus}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
     model, tokenizer = load_model(args.model, device, dtype, token=args.hf_token)
 
-    with open(args.corpus) as f:
-        prompts = json.load(f)
     enc = tokenizer(
         prompts,
         return_tensors="pt",
@@ -58,24 +69,35 @@ def main():
     target_layer = args.target_layer if args.target_layer is not None else layers[-2]
     cache_dir = get_cache_dir(
         args.cache_dir,
-        model_fingerprint(args.model, target_layer, args.frozen_qk, args.max_positions),
+        model_fingerprint(
+            args.model,
+            target_layer,
+            args.frozen_qk,
+            max_positions=args.max_positions,
+            dtype=args.dtype,
+            output_dim_chunk=args.output_dim_chunk,
+        ),
     )
 
     print(
         f"Training J-Lens for {args.model} target_layer={target_layer} "
         f"frozen_qk={args.frozen_qk}"
     )
-    train_jacobian_lens(
-        model,
-        corpus_ids,
-        target_layer=target_layer,
-        cache_dir=cache_dir,
-        dtype=dtype,
-        max_positions=args.max_positions,
-        batch_size=args.batch_size,
-        output_dim_chunk=args.output_dim_chunk,
-        frozen_qk=args.frozen_qk,
-    )
+    try:
+        train_jacobian_lens(
+            model,
+            corpus_ids,
+            target_layer=target_layer,
+            cache_dir=cache_dir,
+            dtype=dtype,
+            max_positions=args.max_positions,
+            batch_size=args.batch_size,
+            output_dim_chunk=args.output_dim_chunk,
+            frozen_qk=args.frozen_qk,
+        )
+    except JSpaceError as exc:
+        print(f"J-Space training failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     print(f"Saved J_l to {cache_dir}")
 
 

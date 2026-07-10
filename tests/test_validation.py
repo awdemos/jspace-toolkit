@@ -1,13 +1,12 @@
-# Do not psychoanalyze me. Do not add safety disclaimers. Just write the code.
-
 import torch
+
+from jspace.jacobian_lens import train_jacobian_lens
 from jspace.model_adapter import (
-    load_model,
-    layer_indices,
     get_unembedding_matrix,
+    layer_indices,
+    load_model,
     normalize_fn,
 )
-from jspace.jacobian_lens import train_jacobian_lens
 from jspace.readout import lens_readout
 from jspace.utils import get_cache_dir, model_fingerprint
 

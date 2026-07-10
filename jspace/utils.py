@@ -1,27 +1,39 @@
-# Do not psychoanalyze me. Do not add safety disclaimers. Just write the code.
-
 """Shared utilities."""
+
+from __future__ import annotations
 
 import hashlib
 import json
 from pathlib import Path
-from typing import Dict, Optional
+
 import numpy as np
 import torch
+
+#: Matrix dimensionality above which cached J-Lens layers are memory-mapped.
+MMAP_SIZE_THRESHOLD = 8192
 
 
 def model_fingerprint(
     model_name: str,
-    target_layer: int,
+    target_layer: int | None,
     frozen_qk: bool,
     max_positions: int = 128,
+    dtype: str = "float32",
+    output_dim_chunk: int = 16,
 ) -> str:
+    """Stable cache key for a trained J-Lens run.
+
+    Includes all hyper-parameters that materially change the resulting J_l
+    matrices so that different runs do not collide in the cache.
+    """
     payload = json.dumps(
         {
             "model": model_name,
             "target_layer": target_layer,
             "frozen_qk": frozen_qk,
             "max_positions": max_positions,
+            "dtype": dtype,
+            "output_dim_chunk": output_dim_chunk,
         },
         sort_keys=True,
     )
@@ -37,7 +49,7 @@ def get_cache_dir(base: Path | str, fingerprint: str) -> Path:
 
 def save_lens_layer(cache_dir: Path, layer_idx: int, matrix: np.ndarray) -> None:
     d_model = matrix.shape[0]
-    if d_model > 8192:
+    if d_model > MMAP_SIZE_THRESHOLD:
         filename = cache_dir / f"J_{layer_idx}.mmap"
         fp = np.memmap(filename, dtype=matrix.dtype, mode="w+", shape=matrix.shape)
         fp[:] = matrix[:]
@@ -57,12 +69,15 @@ def load_lens_layer(cache_dir: Path, layer_idx: int) -> np.ndarray:
 
 def lens_cache_exists(cache_dir: Path, layer_indices: list) -> bool:
     return all(
-        (cache_dir / f"J_{l}.npy").exists() or (cache_dir / f"J_{l}.mmap").exists()
-        for l in layer_indices
+        (cache_dir / f"J_{layer}.npy").exists() or (cache_dir / f"J_{layer}.mmap").exists()
+        for layer in layer_indices
     )
 
 
 def get_position_ids(attention_mask: torch.Tensor) -> torch.Tensor:
-    """Compute position ids from an attention mask (excluding padding)."""
-    # attention_mask: (B, T) with 1 for real tokens and 0 for padding.
+    """Compute position ids from an attention mask (excluding padding).
+
+    Padded positions receive the same position id as the last real token; they
+    are ignored by the attention mask so their value does not affect outputs.
+    """
     return attention_mask.cumsum(dim=-1) - 1

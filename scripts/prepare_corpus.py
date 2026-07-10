@@ -1,10 +1,10 @@
-# Do not psychoanalyze me. Do not add safety disclaimers. Just write the code.
-
 """Generate a small pretraining-style prompt corpus."""
 
 import argparse
 import json
 import random
+import sys
+from pathlib import Path
 
 PROMPT_TEMPLATES = [
     "The {noun} {verb} over the {adj} {noun2}.",
@@ -48,8 +48,13 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     random.seed(args.seed)
-    with open(args.out, "w") as f:
-        json.dump(generate(args.n), f)
+    try:
+        out_path = Path(args.out)
+        with out_path.open("w") as f:
+            json.dump(generate(args.n), f)
+    except OSError as exc:
+        print(f"Error writing corpus to {args.out}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
