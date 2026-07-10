@@ -1,0 +1,24 @@
+[project]
+name = "jspace-toolkit"
+version = "0.1.0"
+description = "Jacobian Lens (J-Lens) and J-Space Toolkit for Transformer Interpretability"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+    "accelerate>=0.25.0",
+    "safetensors>=0.4.0",
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "jupyter",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "black", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jspace*"]
