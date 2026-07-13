@@ -28,6 +28,19 @@ cd jspace-toolkit
 pip install -e ".[dev]"
 ```
 
+For a reproducible install, use the committed `uv.lock` (or
+`requirements.txt` with hashes).
+
+---
+
+## Security note
+
+This toolkit loads and executes model code from HuggingFace repositories. Only
+load models you trust. The CLI does **not** accept `--hf-token`; use the
+`HF_TOKEN` environment variable or `huggingface-cli login`. By default only a
+small allowlist of model IDs may be loaded; use `--allow-unlisted-model` and
+`--model-revision` only after reviewing the repository.
+
 ---
 
 ## 30-second CLI demo
@@ -40,6 +53,7 @@ python scripts/prepare_corpus.py --n 1024 --out corpus.json
 python -m scripts.train_lens \
   --model sshleifer/tiny-gpt2 \
   --corpus corpus.json \
+  --workspace . \
   --max-positions 128 \
   --dtype float32
 

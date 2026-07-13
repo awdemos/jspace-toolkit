@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
+from safetensors import numpy as st_numpy
 
-#: Matrix dimensionality above which cached J-Lens layers are memory-mapped.
-MMAP_SIZE_THRESHOLD = 8192
+from jspace import JSpaceError
+
+#: Maximum number of elements allowed in a cached J-Lens matrix.
+_MAX_CACHE_ELEMENTS = 1_000_000_000
+
+#: Maximum size allowed for any single matrix dimension.
+_MAX_CACHE_DIM_SIZE = 1_000_000
+
+#: Restrictive permissions for cache directories (owner rwx only).
+_CACHE_DIR_MODE = 0o700
 
 
 def model_fingerprint(
@@ -44,32 +55,71 @@ def get_cache_dir(base: Path | str, fingerprint: str) -> Path:
     base = Path(base)
     path = base / fingerprint
     path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, _CACHE_DIR_MODE)
     return path
 
 
+def _checksum_path(safetensors_path: Path) -> Path:
+    return safetensors_path.with_suffix(".sha256")
+
+
+def _compute_checksum(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(8192), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _validate_shape(shape: tuple[int, ...]) -> None:
+    if not shape or len(shape) > 16:
+        raise JSpaceError(f"Invalid cached matrix shape: {shape}")
+    elements = 1
+    for dim in shape:
+        if not isinstance(dim, int) or dim <= 0 or dim > _MAX_CACHE_DIM_SIZE:
+            raise JSpaceError(f"Invalid cached matrix dimension: {dim}")
+        elements *= dim
+    if elements > _MAX_CACHE_ELEMENTS:
+        raise JSpaceError(f"Cached matrix too large: {shape}")
+
+
 def save_lens_layer(cache_dir: Path, layer_idx: int, matrix: np.ndarray) -> None:
-    d_model = matrix.shape[0]
-    if d_model > MMAP_SIZE_THRESHOLD:
-        filename = cache_dir / f"J_{layer_idx}.mmap"
-        fp = np.memmap(filename, dtype=matrix.dtype, mode="w+", shape=matrix.shape)
-        fp[:] = matrix[:]
-        fp.flush()
-        np.save(cache_dir / f"J_{layer_idx}_shape.npy", np.array(matrix.shape))
-    else:
-        np.save(cache_dir / f"J_{layer_idx}.npy", matrix)
+    safetensors_path = cache_dir / f"J_{layer_idx}.safetensors"
+    st_numpy.save_file({"J": matrix}, safetensors_path)
+    _checksum_path(safetensors_path).write_text(
+        _compute_checksum(safetensors_path) + "\n"
+    )
+    os.chmod(cache_dir, _CACHE_DIR_MODE)
 
 
 def load_lens_layer(cache_dir: Path, layer_idx: int) -> np.ndarray:
-    mmap_path = cache_dir / f"J_{layer_idx}.mmap"
-    if mmap_path.exists():
-        shape = tuple(np.load(cache_dir / f"J_{layer_idx}_shape.npy").tolist())
-        return np.memmap(mmap_path, dtype=np.float32, mode="r", shape=shape)
-    return np.load(cache_dir / f"J_{layer_idx}.npy")
+    safetensors_path = cache_dir / f"J_{layer_idx}.safetensors"
+    if not safetensors_path.exists():
+        raise JSpaceError(f"Cached layer {layer_idx} not found")
+
+    checksum_path = _checksum_path(safetensors_path)
+    if not checksum_path.exists():
+        raise JSpaceError(f"Missing checksum for layer {layer_idx}")
+
+    expected = checksum_path.read_text().strip()
+    actual = _compute_checksum(safetensors_path)
+    if not hmac.compare_digest(expected, actual):
+        raise JSpaceError(f"Checksum mismatch for layer {layer_idx}")
+
+    data = st_numpy.load_file(safetensors_path)
+    if "J" not in data:
+        raise JSpaceError(f"Cache file for layer {layer_idx} missing 'J' tensor")
+
+    matrix = data["J"]
+    shape = tuple(int(dim) for dim in matrix.shape)
+    _validate_shape(shape)
+    return np.array(matrix)
 
 
 def lens_cache_exists(cache_dir: Path, layer_indices: list) -> bool:
     return all(
-        (cache_dir / f"J_{layer}.npy").exists() or (cache_dir / f"J_{layer}.mmap").exists()
+        (cache_dir / f"J_{layer}.safetensors").exists()
+        and (cache_dir / f"J_{layer}.sha256").exists()
         for layer in layer_indices
     )
 

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import partial
+from typing import Any, Final
 
 import torch
 from torch.utils.hooks import RemovableHandle
@@ -12,12 +14,75 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from jspace import JSpaceError
 
+#: Models that may be loaded by default. The value is the pinned revision.
+ALLOWED_MODELS: Final[dict[str, str]] = {
+    "gpt2": "main",
+    "sshleifer/tiny-gpt2": "main",
+}
+
+#: Environment variable that, when set to a truthy value, permits unlisted models.
+_ALLOW_UNLISTED_ENV: Final[str] = "JSPACE_ALLOW_UNLISTED_MODELS"
+
+
+def _is_valid_model_identifier(model_name: str) -> bool:
+    """Reject local paths and obviously malformed identifiers."""
+    if not model_name or not isinstance(model_name, str):
+        return False
+    if model_name.startswith((".", "/", "\\")):
+        return False
+    if ".." in model_name or "\\" in model_name or "\x00" in model_name:
+        return False
+    return True
+
+
+def resolve_model(
+    model_name: str,
+    *,
+    revision: str | None = None,
+    allow_unlisted: bool = False,
+) -> tuple[str, str]:
+    """Resolve a user-supplied model name to an allowed identifier and revision.
+
+    Allowed models use the pinned revision unless ``revision`` is explicitly
+    provided. Unlisted models require an explicit ``revision`` and opt-in.
+    """
+    if not _is_valid_model_identifier(model_name):
+        raise JSpaceError(f"Invalid model identifier: {model_name!r}")
+
+    env_allows = os.environ.get(_ALLOW_UNLISTED_ENV, "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    effective_allow = allow_unlisted or env_allows
+
+    if model_name in ALLOWED_MODELS:
+        pinned_revision = ALLOWED_MODELS[model_name]
+        return model_name, revision if revision is not None else pinned_revision
+
+    if not effective_allow:
+        allowed = ", ".join(sorted(ALLOWED_MODELS))
+        raise JSpaceError(
+            f"Model {model_name!r} is not in the allowlist. "
+            f"Allowed models: {allowed}. "
+            f"Use --allow-unlisted-model or set {_ALLOW_UNLISTED_ENV}=1 to opt in."
+        )
+
+    if revision is None:
+        raise JSpaceError(
+            "Unlisted models require an explicit revision via --model-revision."
+        )
+
+    return model_name, revision
+
 
 def load_model(
     model_name: str,
     device: torch.device,
     dtype: torch.dtype = torch.float32,
-    token: str | None = None,
+    *,
+    revision: str | None = None,
+    allow_unlisted: bool = False,
 ) -> tuple[torch.nn.Module, AutoTokenizer]:
     """Load a decoder-only causal LM and its tokenizer.
 
@@ -25,26 +90,45 @@ def load_model(
     `device_map="auto"` is used to spread large models across GPUs, then the
     resulting model is moved to `device` if possible. For CPU or single-GPU
     workloads this behaves as a standard explicit-device load.
+
+    Authentication is read from the ``HF_TOKEN`` environment variable or the
+    HuggingFace CLI cache; a CLI token argument is intentionally not accepted.
     """
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=token)
+    resolved_name, resolved_revision = resolve_model(
+        model_name,
+        revision=revision,
+        allow_unlisted=allow_unlisted,
+    )
+    token = os.environ.get("HF_TOKEN") or None
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        resolved_name,
+        token=token,
+        revision=resolved_revision,
+        trust_remote_code=False,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     if device.type == "cpu":
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            resolved_name,
             torch_dtype=dtype,
             device_map=None,
             token=token,
+            revision=resolved_revision,
+            trust_remote_code=False,
         )
         model = model.to(device)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            resolved_name,
             torch_dtype=dtype,
             device_map="auto",
             token=token,
+            revision=resolved_revision,
+            trust_remote_code=False,
         )
         # With device_map="auto", accelerate may have already placed modules.
         # Move only if the model is not already split across devices.
@@ -117,8 +201,8 @@ def _layer_name(model: torch.nn.Module, layer_idx: int) -> tuple[str, torch.nn.M
 
 @contextmanager
 def temporary_forward_hooks(
-    model: torch.nn.Module, hooks: dict[int, Callable]
-) -> None:
+    model: torch.nn.Module, hooks: Mapping[int, Callable[..., Any]]
+) -> Iterator[None]:
     """Attach temporary forward hooks to decoder blocks and remove them on exit.
 
     hooks maps layer index to a callable suitable for register_forward_hook.

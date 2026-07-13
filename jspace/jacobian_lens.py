@@ -17,7 +17,7 @@ def _d_model(model: nn.Module) -> int:
     d_model = getattr(model.config, "hidden_size", getattr(model.config, "n_embd", None))
     if d_model is None:
         raise JSpaceError("Could not determine model hidden size from config")
-    return d_model
+    return int(d_model)
 
 
 def _base_model(model: nn.Module) -> nn.Module:

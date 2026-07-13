@@ -3,22 +3,30 @@ name = "jspace-toolkit"
 version = "0.1.0"
 description = "Jacobian Lens (J-Lens) and J-Space Toolkit for Transformer Interpretability"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "torch>=2.0.0",
-    "transformers>=4.40.0",
-    "accelerate>=0.25.0",
-    "safetensors>=0.4.0",
-    "numpy",
-    "scipy",
-    "scikit-learn",
-    "matplotlib",
-    "jupyter",
-    "tqdm",
+    "torch==2.12.0",
+    "transformers==5.13.0",
+    "accelerate==1.14.0",
+    "safetensors==0.8.0",
+    "numpy==2.4.4",
+    "scipy==1.17.1",
+    "scikit-learn==1.9.0",
+    "matplotlib==3.10.9",
+    "tqdm==4.67.3",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov", "black", "ruff", "mypy"]
+dev = [
+    "pytest==9.0.3",
+    "pytest-cov==7.1.0",
+    "black==26.3.1",
+    "ruff==0.4.3",
+    "mypy==1.15.0",
+    "pip-audit==2.9.0",
+    "bandit==1.9.4",
+    "jupyter==1.1.1",
+]
 
 [project.scripts]
 train-jspace-lens = "scripts.train_lens:main"
@@ -29,22 +37,27 @@ include = ["jspace*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP", "B", "C4"]
+select = ["E", "F", "I", "W", "UP", "B", "C4", "S"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S311", "S603", "S108", "S106"]
+"scripts/prepare_corpus.py" = ["S311"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = false
 follow_imports = "skip"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

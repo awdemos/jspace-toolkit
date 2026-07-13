@@ -20,7 +20,7 @@ def centered_kernel_alignment(X: torch.Tensor, Y: torch.Tensor) -> float:
     hsic = torch.trace(X @ X.T @ Y @ Y.T)
     norm_x = torch.trace(X @ X.T @ X @ X.T).sqrt()
     norm_y = torch.trace(Y @ Y.T @ Y @ Y.T).sqrt()
-    return (hsic / (norm_x * norm_y + 1e-9)).item()
+    return float((hsic / (norm_x * norm_y + 1e-9)).item())
 
 
 def _excess_kurtosis(readouts: torch.Tensor) -> float:
@@ -76,7 +76,8 @@ def compute_discovery_metrics(
         kurt[idx] = _excess_kurtosis(probs)
 
         preds = logits.argmax(dim=-1)
-        acc[idx] = float(((preds == flat_targets) & valid.bool()).float().sum() / (valid.sum() + 1e-9))
+        correct = ((preds == flat_targets) & valid.bool()).float().sum()
+        acc[idx] = float(correct / (valid.sum() + 1e-9))
 
         top1 = preds.reshape(corpus_batch.shape[0], -1)
         shifted = torch.roll(top1, shifts=-1, dims=1)
