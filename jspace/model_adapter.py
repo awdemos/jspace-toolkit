@@ -112,7 +112,7 @@ def load_model(
     if device.type == "cpu":
         model = AutoModelForCausalLM.from_pretrained(
             resolved_name,
-            torch_dtype=dtype,
+            dtype=dtype,
             device_map=None,
             token=token,
             revision=resolved_revision,
@@ -122,7 +122,7 @@ def load_model(
     else:
         model = AutoModelForCausalLM.from_pretrained(
             resolved_name,
-            torch_dtype=dtype,
+            dtype=dtype,
             device_map="auto",
             token=token,
             revision=resolved_revision,
