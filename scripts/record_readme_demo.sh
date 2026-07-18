@@ -13,21 +13,21 @@ cd "$DEMO_DIR"
 # Use the repo's virtual environment.
 source "$REPO_DIR/.venv/bin/activate"
 
-export HF_TOKEN="${HF_TOKEN:-}"
+export HF_TOKEN="${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-demo}}"
 
 clear
 echo "# J-Space Toolkit — workspace geometry demo"
-sleep 2.0
+sleep 3.5
 
 echo ""
 echo "# Step 1: prepare a tiny corpus"
-sleep 1.5
+sleep 2.5
 python "$REPO_DIR/scripts/prepare_corpus.py" --n 128 --out corpus.json --workspace .
-sleep 2.0
+sleep 3.5
 
 echo ""
 echo "# Step 2: compute the CKA workspace-geometry plot"
-sleep 1.5
+sleep 2.5
 PYTHONPATH="$REPO_DIR" python -m scripts.workspace_geometry \
   --model sshleifer/tiny-gpt2 \
   --corpus corpus.json \
@@ -37,12 +37,13 @@ PYTHONPATH="$REPO_DIR" python -m scripts.workspace_geometry \
   --max-positions 16 \
   --n-probes 64 \
   --dtype float32 \
-  --target-layer 1
-sleep 1.5
+  --target-layer 1 \
+  2> >(grep -v "Warning: You are sending unauthenticated requests" >&2)
+sleep 3.5
 
 echo ""
 echo "# Step 3: inspect the generated metrics"
-sleep 1.0
+sleep 2.5
 python - <<'PY'
 import json
 with open("workspace_out/metrics.json") as f:
@@ -53,9 +54,15 @@ print(f"n_layers:         {m['n_layers']}")
 print(f"workspace band:   [{m['workspace_start']}, {m['workspace_end']}]")
 print(f"mean CKA:         {m['mean_cka']:.4f}")
 PY
-sleep 2.0
+sleep 3.5
+
+echo ""
+echo "# Step 4: view the generated CKA heatmap"
+sleep 2.5
+PYTHONPATH="$REPO_DIR" python "$REPO_DIR/scripts/inline_image.py" workspace_out/cka_block.png --width 70
+sleep 3.5
 
 echo ""
 echo "# Generated files:"
 ls -lh workspace_out/
-sleep 1.5
+sleep 3.5

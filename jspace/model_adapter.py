@@ -97,7 +97,7 @@ def load_model(
         revision=revision,
         allow_unlisted=allow_unlisted,
     )
-    token = os.environ.get("HF_TOKEN") or None
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or None
 
     tokenizer = AutoTokenizer.from_pretrained(
         resolved_name,
