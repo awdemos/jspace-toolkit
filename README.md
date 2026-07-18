@@ -77,13 +77,15 @@ python -m scripts.workspace_geometry \
   --n-probes 1024
 
 # Outputs land in workspace_out/:
-#   cka_block.png  - heatmap of layer-by-layer CKA with inferred workspace overlay
-#   metrics.json - workspace boundaries + CKA statistics
+#   cka_block.png     - heatmap of layer-by-layer CKA with inferred workspace overlay
+#   layer_metrics.png - per-layer kurtosis / accuracy / autocorrelation figure
+#   metrics.json      - workspace boundaries + CKA statistics
+#   report.html       - self-contained visual report (pass --no-report to skip)
 ```
 
 `--n-probes` controls how many vocabulary tokens are used as shared probes for the geometry (default 4096). For tiny models on CPU, use a smaller value such as 256 or 512 to keep memory low.
 
-![workspace_geometry.py in action](assets/workspace_geometry_demo.gif)
+![workspace_geometry.py in action — rich terminal UI, styled plots, and a self-contained HTML report](assets/beautiful_output_demo.gif)
 
 ---
 

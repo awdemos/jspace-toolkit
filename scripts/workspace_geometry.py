@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from tqdm import tqdm
+from rich.console import Console
+from rich.panel import Panel
 
 from jspace import JSpaceError
 from jspace.discovery import (
@@ -23,6 +23,27 @@ from jspace.jacobian_lens import train_jacobian_lens
 from jspace.model_adapter import get_unembedding_matrix, layer_indices, load_model, normalize_fn
 from jspace.utils import get_cache_dir, model_fingerprint
 from jspace.validation import validate_path, validate_workspace
+from jspace.viz import (
+    config_table,
+    get_console,
+    header_panel,
+    jl_track,
+    metrics_table,
+    plot_cka_block,
+    plot_layer_metrics,
+    render_html_report,
+)
+
+matplotlib.use("Agg")  # headless rendering for CLI use
+
+err_console = Console(stderr=True, highlight=False)
+
+
+def _fail(message: str) -> SystemExit:
+    """Print a styled error to stderr and return an exit-1 SystemExit."""
+    err_console.print(Panel(f"[bold red]{message}[/]", border_style="red", title="Error"))
+    return SystemExit(1)
+
 
 DEFAULT_PROBE_COUNT = 4096
 
@@ -80,7 +101,7 @@ def compute_cka_block(V_by_layer: dict[int, torch.Tensor]) -> np.ndarray:
     layers = sorted(V_by_layer.keys())
     n = len(layers)
     cka = np.zeros((n, n), dtype=np.float64)
-    for i, li in enumerate(tqdm(layers, desc="CKA block")):
+    for i, li in enumerate(jl_track(layers, "CKA block")):
         for j, lj in enumerate(layers):
             if j < i:
                 cka[i, j] = cka[j, i]
@@ -89,47 +110,6 @@ def compute_cka_block(V_by_layer: dict[int, torch.Tensor]) -> np.ndarray:
                     V_by_layer[li].float(), V_by_layer[lj].float()
                 )
     return cka
-
-
-def _plot_cka_block(
-    cka: np.ndarray,
-    boundaries: tuple[int, int],
-    layers: list[int],
-    model_name: str,
-    out_path: Path,
-) -> None:
-    """Render a PNG heatmap of the CKA block with workspace overlay."""
-    matplotlib.use("Agg")
-    start, end = boundaries
-    fig, ax = plt.subplots(figsize=(8, 7))
-    im = ax.imshow(cka, cmap="viridis", vmin=0.0, vmax=1.0)
-    if 0 <= start < len(layers) and 0 <= end < len(layers):
-        rect = plt.Rectangle(
-            (start - 0.5, start - 0.5),
-            end - start + 1,
-            end - start + 1,
-            linewidth=4,
-            edgecolor="red",
-            facecolor="none",
-            linestyle="--",
-        )
-        ax.add_patch(rect)
-    tick_step = max(1, len(layers) // 8)
-    ax.set_xticks(np.arange(0, len(layers), tick_step))
-    ax.set_yticks(np.arange(0, len(layers), tick_step))
-    ax.set_xticklabels([str(layers[i]) for i in ax.get_xticks()])
-    ax.set_yticklabels([str(layers[i]) for i in ax.get_yticks()])
-    ax.set_xlabel("Source layer")
-    ax.set_ylabel("Target layer")
-    ax.set_title(f"J-Lens workspace geometry (CKA) — {model_name}\nmatrix entry = CKA similarity between layer outputs")
-    for i in range(len(layers)):
-        for j in range(len(layers)):
-            text_color = "white" if cka[i, j] < 0.5 else "black"
-            ax.text(j, i, f"{cka[i, j]:.2f}", ha="center", va="center", color=text_color, fontsize=9)
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="CKA similarity")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
 
 
 def main() -> None:
@@ -159,6 +139,11 @@ def main() -> None:
         "--n-probes", type=int, default=DEFAULT_PROBE_COUNT, help="Number of default probe tokens"
     )
     parser.add_argument("--frozen-qk", action="store_true")
+    parser.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Skip writing the self-contained HTML report",
+    )
     args = parser.parse_args()
 
     dtype = getattr(torch, args.dtype)
@@ -171,8 +156,7 @@ def main() -> None:
         output_dir = validate_path(args.output_dir, workspace)
         output_dir.mkdir(parents=True, exist_ok=True)
     except JSpaceError as exc:
-        print(f"Invalid path: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
+        raise _fail(f"Invalid path: {exc}") from exc
 
     model, tokenizer = load_model(
         args.model,
@@ -197,7 +181,19 @@ def main() -> None:
         ),
     )
 
-    print(f"Training/caching J-Lens for {args.model} target_layer={target_layer}")
+    console = get_console()
+    console.print(header_panel("Workspace Geometry", "CKA layer geometry and workspace discovery"))
+    console.print(
+        config_table(
+            {
+                "model": args.model,
+                "target layer": target_layer,
+                "dtype": args.dtype,
+                "device": device,
+                "max positions": args.max_positions,
+            }
+        )
+    )
     J = train_jacobian_lens(
         model,
         corpus,
@@ -218,9 +214,9 @@ def main() -> None:
         probe_ids_list = _default_probe_ids(tokenizer, args.n_probes)
     probe_ids = torch.tensor(probe_ids_list, dtype=torch.long)
 
-    print(f"Building token geometry for {len(probe_ids_list)} probe tokens")
+    console.print(f"[bold]Building token geometry for[/] {len(probe_ids_list)} probe tokens")
     V_by_layer: dict[int, torch.Tensor] = {}
-    for layer in tqdm(sorted(J.keys()), desc="Building V_l"):
+    for layer in jl_track(sorted(J.keys()), "Building V_l"):
         V_by_layer[layer] = build_V_l(
             J[layer],
             W_U,
@@ -229,11 +225,9 @@ def main() -> None:
             dtype=torch.float32,
         )
 
-    print("Computing CKA block matrix")
     cka = compute_cka_block(V_by_layer)
     layers_with_v = sorted(V_by_layer.keys())
 
-    print("Computing discovery metrics for workspace boundary inference")
     discovery_metrics = compute_discovery_metrics(
         model,
         tokenizer,
@@ -246,8 +240,22 @@ def main() -> None:
     )
     start, end = infer_workspace_boundaries(discovery_metrics)
 
+    console.print(metrics_table(layers_with_v, discovery_metrics, (start, end)))
+    console.print(
+        Panel(
+            f"[bold #f0b72f]Workspace band: layers {start} – {end}[/]",
+            border_style="#f0b72f",
+            expand=False,
+        )
+    )
+
     png_path = output_dir / "cka_block.png"
-    _plot_cka_block(cka, (start, end), layers_with_v, args.model, png_path)
+    fig = plot_cka_block(cka, (start, end), layers_with_v, args.model, png_path)
+    plt.close(fig)
+
+    metrics_png_path = output_dir / "layer_metrics.png"
+    fig = plot_layer_metrics(discovery_metrics, (start, end), layers_with_v, metrics_png_path)
+    plt.close(fig)
 
     metrics = {
         "model": args.model,
@@ -268,9 +276,38 @@ def main() -> None:
     with json_path.open("w") as f:
         json.dump(metrics, f)
 
-    print(f"Wrote {png_path}")
-    print(f"Wrote {json_path}")
-    print(f"Workspace boundaries: layer {start} to {end}")
+    artifacts = [png_path, metrics_png_path, json_path]
+    if not args.no_report:
+        report_path = output_dir / "report.html"
+        render_html_report(
+            args.model,
+            {
+                "model": args.model,
+                "target_layer": target_layer,
+                "dtype": args.dtype,
+                "max_positions": args.max_positions,
+                "frozen_qk": args.frozen_qk,
+                "n_probe_tokens": len(probe_ids_list),
+            },
+            metrics,
+            (start, end),
+            layers_with_v,
+            {
+                "CKA layer-by-layer similarity": png_path,
+                "Per-layer discovery metrics": metrics_png_path,
+            },
+            report_path,
+        )
+        artifacts.append(report_path)
+
+    listing = "\n".join(f"[bold]{p}[/]" for p in artifacts)
+    console.print(
+        Panel(
+            f"[bold green]✓ Analysis complete[/]\n\n{listing}",
+            border_style="green",
+            title="Artifacts",
+        )
+    )
 
 
 if __name__ == "__main__":

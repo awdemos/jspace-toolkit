@@ -6,11 +6,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from tqdm import tqdm
 
 from jspace import JSpaceError
 from jspace.model_adapter import _base_model, _layer_container, _norm_module, layer_indices
 from jspace.utils import get_position_ids, lens_cache_exists, load_lens_layer, save_lens_layer
+from jspace.viz import jl_track
 
 
 def _d_model(model: nn.Module) -> int:
@@ -280,7 +280,8 @@ def train_jacobian_lens(
             count = 0
 
             model.eval()
-            for start in tqdm(range(0, corpus.shape[0], batch_size), desc="Training J-Lens"):
+            batches = range(0, corpus.shape[0], batch_size)
+            for start in jl_track(batches, "Training J-Lens"):
                 batch_ids = corpus[start : start + batch_size]
                 B, T = batch_ids.shape
                 pad_id = getattr(model.config, "pad_token_id", None)

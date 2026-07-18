@@ -2,15 +2,25 @@
 
 import argparse
 import json
-import sys
 
 import torch
+from rich.console import Console
+from rich.panel import Panel
 
 from jspace import JSpaceError
 from jspace.jacobian_lens import train_jacobian_lens
 from jspace.model_adapter import layer_indices, load_model
 from jspace.utils import get_cache_dir, model_fingerprint
 from jspace.validation import validate_path, validate_workspace
+from jspace.viz import config_table, get_console, header_panel
+
+err_console = Console(stderr=True, highlight=False)
+
+
+def _fail(message: str) -> SystemExit:
+    """Print a styled error to stderr and return an exit-1 SystemExit."""
+    err_console.print(Panel(f"[bold red]{message}[/]", border_style="red", title="Error"))
+    return SystemExit(1)
 
 
 def main():
@@ -58,18 +68,15 @@ def main():
         corpus_path = validate_path(args.corpus, workspace, must_exist=True, must_be_file=True)
         cache_base = validate_path(args.cache_dir, workspace)
     except JSpaceError as exc:
-        print(f"Invalid path: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
+        raise _fail(f"Invalid path: {exc}") from exc
 
     try:
         with corpus_path.open() as f:
             prompts = json.load(f)
     except FileNotFoundError as exc:
-        print(f"Corpus file not found: {args.corpus}", file=sys.stderr)
-        raise SystemExit(1) from exc
+        raise _fail(f"Corpus file not found: {args.corpus}") from exc
     except json.JSONDecodeError as exc:
-        print(f"Invalid JSON corpus at {args.corpus}: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
+        raise _fail(f"Invalid JSON corpus at {args.corpus}: {exc}") from exc
 
     model, tokenizer = load_model(
         args.model,
@@ -102,8 +109,20 @@ def main():
         ),
     )
 
-    print(
-        f"Training J-Lens for {args.model} target_layer={target_layer} frozen_qk={args.frozen_qk}"
+    console = get_console()
+    console.print(header_panel("J-Lens Training", "Jacobian Lens matrices for mid-layer readout"))
+    console.print(
+        config_table(
+            {
+                "model": args.model,
+                "target layer": target_layer,
+                "frozen qk": args.frozen_qk,
+                "dtype": args.dtype,
+                "device": device,
+                "prompts": len(prompts),
+                "max positions": args.max_positions,
+            }
+        )
     )
     try:
         train_jacobian_lens(
@@ -118,9 +137,14 @@ def main():
             frozen_qk=args.frozen_qk,
         )
     except JSpaceError as exc:
-        print(f"J-Space training failed: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-    print(f"Saved J_l to {cache_dir}")
+        raise _fail(f"J-Space training failed: {exc}") from exc
+    console.print(
+        Panel(
+            f"[bold green]✓ Training complete[/]\n\nSaved J_l to [bold]{cache_dir}[/]",
+            border_style="green",
+            title="Done",
+        )
+    )
 
 
 if __name__ == "__main__":
