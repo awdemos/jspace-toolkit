@@ -1,0 +1,46 @@
+name: Security CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Bandit security scan
+        run: bandit -r jspace scripts
+
+      - name: Ruff lint (including bandit rules)
+        run: ruff check --select E,F,I,W,UP,B,C4,S jspace scripts tests
+
+      - name: Type check with mypy
+        run: mypy jspace scripts
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+      - name: Audit dependencies
+        run: pip-audit --desc
+
+      - name: Prevent CLI token argument regression
+        run: |
+          if grep -R -- '--hf-token' scripts tests jspace; then
+            echo 'ERROR: --hf-token CLI argument must not be reintroduced.'
+            exit 1
+          fi

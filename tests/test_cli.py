@@ -18,7 +18,17 @@ def tiny_corpus(tmp_path: Path) -> Path:
 def test_prepare_corpus_smoke(tmp_path: Path) -> None:
     out = tmp_path / "corpus.json"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.prepare_corpus", "--n", "4", "--out", str(out)],
+        [
+            sys.executable,
+            "-m",
+            "scripts.prepare_corpus",
+            "--n",
+            "4",
+            "--out",
+            str(out),
+            "--workspace",
+            str(tmp_path),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -31,11 +41,65 @@ def test_prepare_corpus_smoke(tmp_path: Path) -> None:
 def test_prepare_corpus_bad_parent(tmp_path: Path) -> None:
     out = tmp_path / "nonexistent" / "corpus.json"
     result = subprocess.run(
-        [sys.executable, "-m", "scripts.prepare_corpus", "--n", "1", "--out", str(out)],
+        [
+            sys.executable,
+            "-m",
+            "scripts.prepare_corpus",
+            "--n",
+            "1",
+            "--out",
+            str(out),
+            "--workspace",
+            str(tmp_path),
+        ],
         capture_output=True,
         text=True,
     )
     assert result.returncode == 1
+
+
+def test_prepare_corpus_path_escapes_workspace(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.prepare_corpus",
+            "--n",
+            "1",
+            "--out",
+            "../escaped.json",
+            "--workspace",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "outside" in result.stderr.lower()
+
+
+def test_train_lens_rejects_hf_token_argument(tmp_path: Path, tiny_corpus: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.train_lens",
+            "--model",
+            "sshleifer/tiny-gpt2",
+            "--corpus",
+            str(tiny_corpus),
+            "--cache-dir",
+            str(tmp_path / "lens_cache"),
+            "--workspace",
+            str(tmp_path),
+            "--hf-token",
+            "hf_secret",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "--hf-token" in result.stderr
 
 
 @pytest.mark.slow
@@ -52,6 +116,8 @@ def test_train_jspace_lens_smoke(tmp_path: Path, tiny_corpus: Path, frozen_qk: b
         str(tiny_corpus),
         "--cache-dir",
         str(cache_dir),
+        "--workspace",
+        str(tmp_path),
         "--max-positions",
         "16",
         "--batch-size",
@@ -69,7 +135,8 @@ def test_train_jspace_lens_smoke(tmp_path: Path, tiny_corpus: Path, frozen_qk: b
         text=True,
     )
     assert result.returncode == 0
-    assert any(cache_dir.rglob("J_*.npy"))
+    assert any(cache_dir.rglob("J_*.safetensors"))
+    assert any(cache_dir.rglob("J_*.sha256"))
 
 
 @pytest.mark.slow
@@ -87,6 +154,8 @@ def test_workspace_geometry_cli_smoke(tmp_path: Path, tiny_corpus: Path) -> None
         str(output_dir),
         "--cache-dir",
         str(tmp_path / "lens_cache"),
+        "--workspace",
+        str(tmp_path),
         "--max-positions",
         "16",
         "--batch-size",

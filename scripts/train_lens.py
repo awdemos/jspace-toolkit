@@ -3,7 +3,6 @@
 import argparse
 import json
 import sys
-from pathlib import Path
 
 import torch
 
@@ -11,11 +10,18 @@ from jspace import JSpaceError
 from jspace.jacobian_lens import train_jacobian_lens
 from jspace.model_adapter import layer_indices, load_model
 from jspace.utils import get_cache_dir, model_fingerprint
+from jspace.validation import validate_path, validate_workspace
 
 
 def main():
     parser = argparse.ArgumentParser(description="Train Jacobian Lens matrices")
     parser.add_argument("--model", required=True, help="HuggingFace model name")
+    parser.add_argument("--model-revision", default=None, help="Pinned revision")
+    parser.add_argument(
+        "--allow-unlisted-model",
+        action="store_true",
+        help="Opt-in to loading a model not in the allowlist",
+    )
     parser.add_argument("--corpus", required=True, help="Path to JSON corpus file")
     parser.add_argument(
         "--target-layer",
@@ -37,13 +43,24 @@ def main():
     parser.add_argument("--max-positions", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--output-dim-chunk", type=int, default=16)
-    parser.add_argument("--hf-token", default=None)
+    parser.add_argument(
+        "--workspace",
+        default=".",
+        help="Root directory that --corpus and --cache-dir must stay inside",
+    )
     args = parser.parse_args()
 
     dtype = getattr(torch, args.dtype)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    corpus_path = Path(args.corpus)
+    try:
+        workspace = validate_workspace(args.workspace)
+        corpus_path = validate_path(args.corpus, workspace, must_exist=True, must_be_file=True)
+        cache_base = validate_path(args.cache_dir, workspace)
+    except JSpaceError as exc:
+        print(f"Invalid path: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
     try:
         with corpus_path.open() as f:
             prompts = json.load(f)
@@ -54,7 +71,13 @@ def main():
         print(f"Invalid JSON corpus at {args.corpus}: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
-    model, tokenizer = load_model(args.model, device, dtype, token=args.hf_token)
+    model, tokenizer = load_model(
+        args.model,
+        device,
+        dtype,
+        revision=args.model_revision,
+        allow_unlisted=args.allow_unlisted_model,
+    )
 
     enc = tokenizer(
         prompts,
@@ -68,7 +91,7 @@ def main():
     layers = layer_indices(model)
     target_layer = args.target_layer if args.target_layer is not None else layers[-2]
     cache_dir = get_cache_dir(
-        args.cache_dir,
+        cache_base,
         model_fingerprint(
             args.model,
             target_layer,

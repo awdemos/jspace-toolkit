@@ -89,9 +89,8 @@ def compute_discovery_metrics(
         kurt[idx] = _excess_kurtosis(probs)
 
         preds = logits.argmax(dim=-1)
-        acc[idx] = float(
-            ((preds == flat_targets) & valid.bool()).float().sum() / (valid.sum() + 1e-9)
-        )
+        correct = ((preds == flat_targets) & valid.bool()).float().sum()
+        acc[idx] = float(correct / (valid.sum() + 1e-9))
 
         top1 = preds.reshape(corpus_batch.shape[0], -1)
         shifted = torch.roll(top1, shifts=-1, dims=1)

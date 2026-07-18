@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -21,6 +22,7 @@ from jspace.discovery import (
 from jspace.jacobian_lens import train_jacobian_lens
 from jspace.model_adapter import get_unembedding_matrix, layer_indices, load_model, normalize_fn
 from jspace.utils import get_cache_dir, model_fingerprint
+from jspace.validation import validate_path, validate_workspace
 
 DEFAULT_PROBE_COUNT = 4096
 
@@ -123,10 +125,21 @@ def _plot_cka_block(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compute CKA workspace geometry for a model")
     parser.add_argument("--model", required=True, help="HuggingFace model name")
+    parser.add_argument("--model-revision", default=None, help="Pinned revision")
+    parser.add_argument(
+        "--allow-unlisted-model",
+        action="store_true",
+        help="Opt-in to loading a model not in the allowlist",
+    )
     parser.add_argument("--corpus", required=True, help="Path to JSON corpus file")
     parser.add_argument("--target-layer", type=int, default=None)
     parser.add_argument("--cache-dir", default="lens_cache", help="Directory to cache J_l")
     parser.add_argument("--output-dir", default="workspace_out", help="Directory for outputs")
+    parser.add_argument(
+        "--workspace",
+        default=".",
+        help="Root directory that --corpus, --cache-dir, and --output-dir must stay inside",
+    )
     parser.add_argument("--dtype", default="float32", choices=["float16", "bfloat16", "float32"])
     parser.add_argument("--max-positions", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -136,21 +149,34 @@ def main() -> None:
         "--n-probes", type=int, default=DEFAULT_PROBE_COUNT, help="Number of default probe tokens"
     )
     parser.add_argument("--frozen-qk", action="store_true")
-    parser.add_argument("--hf-token", default=None)
     args = parser.parse_args()
 
     dtype = getattr(torch, args.dtype)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    model, tokenizer = load_model(args.model, device, dtype, token=args.hf_token)
-    corpus = _load_corpus(Path(args.corpus), tokenizer, args.max_positions)
+    try:
+        workspace = validate_workspace(args.workspace)
+        corpus_path = validate_path(args.corpus, workspace, must_exist=True, must_be_file=True)
+        cache_base = validate_path(args.cache_dir, workspace)
+        output_dir = validate_path(args.output_dir, workspace)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except JSpaceError as exc:
+        print(f"Invalid path: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+    model, tokenizer = load_model(
+        args.model,
+        device,
+        dtype,
+        revision=args.model_revision,
+        allow_unlisted=args.allow_unlisted_model,
+    )
+    corpus = _load_corpus(corpus_path, tokenizer, args.max_positions)
     layers = layer_indices(model)
     target_layer = args.target_layer if args.target_layer is not None else layers[-2]
 
     cache_dir = get_cache_dir(
-        args.cache_dir,
+        cache_base,
         model_fingerprint(
             args.model,
             target_layer,

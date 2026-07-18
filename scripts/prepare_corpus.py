@@ -4,7 +4,9 @@ import argparse
 import json
 import random
 import sys
-from pathlib import Path
+
+from jspace import JSpaceError
+from jspace.validation import validate_path, validate_workspace
 
 PROMPT_TEMPLATES = [
     "The {noun} {verb} over the {adj} {noun2}.",
@@ -27,15 +29,16 @@ QUESTIONS = [
 def generate(n: int) -> list:
     prompts = []
     for _ in range(n):
-        template = random.choice(PROMPT_TEMPLATES)
+        # These random choices are for reproducible demo data, not security.  # nosec B311
+        template = random.choice(PROMPT_TEMPLATES)  # nosec B311
         prompts.append(
             template.format(
-                noun=random.choice(NOUNS),
-                noun2=random.choice(NOUNS),
-                verb=random.choice(VERBS),
-                adj=random.choice(ADJS),
-                year=random.randint(50, 99),
-                question=random.choice(QUESTIONS),
+                noun=random.choice(NOUNS),  # nosec B311
+                noun2=random.choice(NOUNS),  # nosec B311
+                verb=random.choice(VERBS),  # nosec B311
+                adj=random.choice(ADJS),  # nosec B311
+                year=random.randint(50, 99),  # nosec B311
+                question=random.choice(QUESTIONS),  # nosec B311
             )
         )
     return prompts
@@ -46,13 +49,19 @@ def main():
     parser.add_argument("--n", type=int, default=1024)
     parser.add_argument("--out", default="corpus.json")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--workspace",
+        default=".",
+        help="Root directory that --out must be contained within",
+    )
     args = parser.parse_args()
     random.seed(args.seed)
     try:
-        out_path = Path(args.out)
+        workspace = validate_workspace(args.workspace)
+        out_path = validate_path(args.out, workspace)
         with out_path.open("w") as f:
             json.dump(generate(args.n), f)
-    except OSError as exc:
+    except (OSError, JSpaceError) as exc:
         print(f"Error writing corpus to {args.out}: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 

@@ -64,7 +64,7 @@ def token_logit(
     del tokenizer
     logits = _project(h_l, J_l, W_U, norm_fn)
     _check_token_id(token_id, logits.shape[-1])
-    return logits[token_id].item()
+    return float(logits[token_id].item())
 
 
 def token_similarity(
@@ -77,4 +77,4 @@ def token_similarity(
     _check_token_id(token_id, W_U.shape[0])
     J = torch.from_numpy(J_l).to(h_l.device, h_l.dtype)
     v = F.linear(W_U[token_id].to(h_l.device, h_l.dtype), J.t())
-    return F.cosine_similarity(v.unsqueeze(0), h_l.unsqueeze(0)).item()
+    return float(F.cosine_similarity(v.unsqueeze(0), h_l.unsqueeze(0)).item())
