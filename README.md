@@ -83,6 +83,8 @@ python -m scripts.workspace_geometry \
 
 `--n-probes` controls how many vocabulary tokens are used as shared probes for the geometry (default 4096). For tiny models on CPU, use a smaller value such as 256 or 512 to keep memory low.
 
+![workspace_geometry.py in action](assets/workspace_geometry_demo.gif)
+
 ---
 
 ## What the code looks like
