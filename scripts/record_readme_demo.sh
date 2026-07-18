@@ -71,13 +71,25 @@ print(f"mean CKA:         {m['mean_cka']:.4f}")
 PY
 sleep 0.5
 
-type_line "python scripts/inline_image.py workspace_out/cka_block.png --width 90"
+type_line "python scripts/inline_image.py workspace_out/cka_block.png --width 64"
 sleep 0.2
 echo ""
 echo "J-Lens workspace geometry (CKA) — sshleifer/tiny-gpt2"
-echo "Axes: Layer vs Layer  |  Red box: inferred workspace band"
+echo "Each cell = CKA similarity between layer outputs"
 echo ""
-PYTHONPATH="$REPO_DIR" python "$REPO_DIR/scripts/inline_image.py" workspace_out/cka_block.png --width 90
+PYTHONPATH="$REPO_DIR" python "$REPO_DIR/scripts/inline_image.py" workspace_out/cka_block.png --width 64
+echo ""
+python - <<'PY'
+import json, numpy as np
+with open("workspace_out/metrics.json") as f:
+    m = json.load(f)
+print("Compact CKA matrix (rows/cols = layers):")
+cka = np.array(m["cka_block"])
+print("     " + "".join(f"{i:4d}" for i in range(cka.shape[1])))
+for i, row in enumerate(cka):
+    print(f"{i:3d}:" + "".join(f"{v:4.2f}" for v in row))
+print(f"workspace band: [{m['workspace_start']}, {m['workspace_end']}]")
+PY
 sleep 0.5
 
 type_line "ls -lh workspace_out/"
