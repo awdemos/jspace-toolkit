@@ -38,7 +38,7 @@ PYTHONPATH="$REPO_DIR" python -m scripts.workspace_geometry \
   --n-probes 64 \
   --dtype float32 \
   --target-layer 1 \
-  2> >(grep -v "Warning: You are sending unauthenticated requests" >&2)
+  2> >(grep -v -E "Warning: You are sending unauthenticated requests|\[transformers\].*torch_dtype is deprecated|GPT2LMHeadModel LOAD REPORT|UNEXPECTED| transformer\.h\.|Notes:|can be ignored" >&2)
 sleep 3.5
 
 echo ""
