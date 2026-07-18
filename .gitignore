@@ -11,4 +11,3 @@ checkpoints/
 lens_cache/
 *.ipynb_checkpoints/
 .ipynb_checkpoints/
-.omo/
