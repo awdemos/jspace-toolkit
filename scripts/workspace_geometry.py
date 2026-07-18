@@ -108,15 +108,21 @@ def _plot_cka_block(
             (start - 0.5, start - 0.5),
             end - start + 1,
             end - start + 1,
-            linewidth=3,
+            linewidth=4,
             edgecolor="red",
             facecolor="none",
+            linestyle="--",
         )
         ax.add_patch(rect)
-    ax.set_xlabel("Layer")
-    ax.set_ylabel("Layer")
-    ax.set_title(f"J-Lens workspace geometry (CKA) — {model_name}")
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    tick_step = max(1, len(layers) // 8)
+    ax.set_xticks(np.arange(0, len(layers), tick_step))
+    ax.set_yticks(np.arange(0, len(layers), tick_step))
+    ax.set_xticklabels([str(layers[i]) for i in ax.get_xticks()])
+    ax.set_yticklabels([str(layers[i]) for i in ax.get_yticks()])
+    ax.set_xlabel("Source layer")
+    ax.set_ylabel("Target layer")
+    ax.set_title(f"J-Lens workspace geometry (CKA) — {model_name}\nmatrix entry = CKA similarity between layer outputs")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="CKA similarity")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)

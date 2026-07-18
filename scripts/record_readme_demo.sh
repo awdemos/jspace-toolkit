@@ -71,9 +71,13 @@ print(f"mean CKA:         {m['mean_cka']:.4f}")
 PY
 sleep 0.5
 
-type_line "python scripts/inline_image.py workspace_out/cka_block.png --width 70"
+type_line "python scripts/inline_image.py workspace_out/cka_block.png --width 90"
 sleep 0.2
-PYTHONPATH="$REPO_DIR" python "$REPO_DIR/scripts/inline_image.py" workspace_out/cka_block.png --width 70
+echo ""
+echo "J-Lens workspace geometry (CKA) — sshleifer/tiny-gpt2"
+echo "Axes: Layer vs Layer  |  Red box: inferred workspace band"
+echo ""
+PYTHONPATH="$REPO_DIR" python "$REPO_DIR/scripts/inline_image.py" workspace_out/cka_block.png --width 90
 sleep 0.5
 
 type_line "ls -lh workspace_out/"
