@@ -17,9 +17,11 @@ def test_verbal_report_sanity(tmp_path):
     input_ids = tokenizer(prompt, return_tensors="pt").input_ids
     with torch.no_grad():
         generated = model.generate(input_ids, max_new_tokens=5, do_sample=False)
-    answer = tokenizer.decode(
-        generated[0, input_ids.shape[1] :], skip_special_tokens=True
-    ).strip().split()[0]
+    answer = (
+        tokenizer.decode(generated[0, input_ids.shape[1] :], skip_special_tokens=True)
+        .strip()
+        .split()[0]
+    )
 
     layers = layer_indices(model)
     target_layer = layers[-2]

@@ -23,7 +23,7 @@ def coordinate_swap(
     """Swap sparse J-space coefficients of two concept tokens while preserving h_perp."""
     from jspace.decomposition import decompose_jspace
 
-    a, _, h_perp = decompose_jspace(h, V, k=k, non_negative=True)
+    a, _, h_perp = decompose_jspace(h, V=V, k=k, non_negative=True)
     a_swapped = a.clone()
     a_swapped[source_token_id] = a[target_token_id] * alpha + a[source_token_id] * (1 - alpha)
     a_swapped[target_token_id] = a[source_token_id] * alpha + a[target_token_id] * (1 - alpha)

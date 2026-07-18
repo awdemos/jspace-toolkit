@@ -65,14 +65,25 @@ def layer_indices(model: torch.nn.Module) -> list[int]:
     return list(range(n))
 
 
-def _norm_module(model: torch.nn.Module) -> torch.nn.Module | None:
-    """Return the model's final norm module, guessing by common names."""
-    base = model
+def _base_model(model: torch.nn.Module) -> torch.nn.Module:
+    """Return the inner transformer body (e.g. model.model for LlamaForCausalLM)."""
     for attr in ("model", "transformer", "gpt_neox", "model.decoder"):
-        base = getattr(base, attr, base)
+        base = getattr(model, attr, None)
+        if base is not None:
+            return base
+    return model
+
+
+def _norm_module(model: torch.nn.Module) -> torch.nn.Module | None:
+    """Return the model's final norm module using attribute probing."""
+    base = _base_model(model)
     for name in ("norm", "ln_f", "final_layer_norm"):
         mod = getattr(base, name, None)
-        if mod is not None:
+        if isinstance(mod, torch.nn.Module):
+            return mod
+    for name in ("norm", "ln_f", "final_layer_norm"):
+        mod = getattr(model, name, None)
+        if isinstance(mod, torch.nn.Module):
             return mod
     return None
 
@@ -97,28 +108,40 @@ def get_unembedding_matrix(model: torch.nn.Module) -> torch.Tensor:
     return lm_head.weight.detach()
 
 
-def _layer_name(model: torch.nn.Module, layer_idx: int) -> tuple[str, torch.nn.Module]:
-    """Locate the transformer block module for a layer index."""
-    for container_name in (
-        "model.layers",
-        "transformer.h",
-        "gpt_neox.layers",
-        "model.decoder.layers",
-    ):
+def _layer_container(model: torch.nn.Module) -> tuple[str, torch.nn.Module]:
+    """Locate the inner layer container (e.g. transformer.h, model.layers).
+
+    Returns (dotted_path, container_module). Probes common attribute patterns
+    for GPT-2, Llama, Qwen2, Gemma, OLMo, Phi, GPT-NeoX, and Bloom-style
+    decoder-only models.
+    """
+    base = _base_model(model)
+    for container_name in ("layers", "h"):
+        container = getattr(base, container_name, None)
+        if container is not None and hasattr(container, "__len__"):
+            return container_name, container
+    # Some architectures expose decoder layers under a deeper path.
+    for dotted_path in ("decoder.layers", "transformer.layers"):
         container = model
-        for part in container_name.split("."):
+        for part in dotted_path.split("."):
             container = getattr(container, part, None)
             if container is None:
                 break
-        if container is not None and layer_idx < len(container):
-            return container_name, container[layer_idx]
-    raise JSpaceError(f"Could not locate layer {layer_idx}")
+        if container is not None and hasattr(container, "__len__"):
+            return dotted_path, container
+    raise JSpaceError("Could not locate layer container")
+
+
+def _layer_name(model: torch.nn.Module, layer_idx: int) -> tuple[str, torch.nn.Module]:
+    """Locate the transformer block module for a layer index."""
+    container_name, container = _layer_container(model)
+    if layer_idx < len(container):
+        return container_name, container[layer_idx]
+    raise JSpaceError(f"Could not locate layer {layer_idx} in {container_name}")
 
 
 @contextmanager
-def temporary_forward_hooks(
-    model: torch.nn.Module, hooks: dict[int, Callable]
-) -> None:
+def temporary_forward_hooks(model: torch.nn.Module, hooks: dict[int, Callable]) -> None:
     """Attach temporary forward hooks to decoder blocks and remove them on exit.
 
     hooks maps layer index to a callable suitable for register_forward_hook.
@@ -158,9 +181,7 @@ def cache_residuals(
     Returns dict mapping layer index -> tensor of shape [B, T, d_model].
     """
     cache: dict[int, list[torch.Tensor]] = {layer: [] for layer in layers}
-    hooks = {
-        layer_idx: partial(_cache_hook, layer_idx, cache) for layer_idx in layers
-    }
+    hooks = {layer_idx: partial(_cache_hook, layer_idx, cache) for layer_idx in layers}
 
     with torch.no_grad(), temporary_forward_hooks(model, hooks):
         model(input_ids, attention_mask=attention_mask, return_dict=True)

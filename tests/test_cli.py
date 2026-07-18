@@ -70,3 +70,38 @@ def test_train_jspace_lens_smoke(tmp_path: Path, tiny_corpus: Path, frozen_qk: b
     )
     assert result.returncode == 0
     assert any(cache_dir.rglob("J_*.npy"))
+
+
+@pytest.mark.slow
+def test_workspace_geometry_cli_smoke(tmp_path: Path, tiny_corpus: Path) -> None:
+    output_dir = tmp_path / "workspace_out"
+    cmd = [
+        sys.executable,
+        "-m",
+        "scripts.workspace_geometry",
+        "--model",
+        "sshleifer/tiny-gpt2",
+        "--corpus",
+        str(tiny_corpus),
+        "--output-dir",
+        str(output_dir),
+        "--cache-dir",
+        str(tmp_path / "lens_cache"),
+        "--max-positions",
+        "16",
+        "--batch-size",
+        "1",
+        "--n-probes",
+        "64",
+        "--dtype",
+        "float32",
+    ]
+    result = subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert (output_dir / "cka_block.png").exists()
+    assert (output_dir / "metrics.json").exists()

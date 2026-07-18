@@ -9,7 +9,7 @@ from torch import nn
 from tqdm import tqdm
 
 from jspace import JSpaceError
-from jspace.model_adapter import layer_indices
+from jspace.model_adapter import _base_model, _layer_container, _norm_module, layer_indices
 from jspace.utils import get_position_ids, lens_cache_exists, load_lens_layer, save_lens_layer
 
 
@@ -20,48 +20,36 @@ def _d_model(model: nn.Module) -> int:
     return d_model
 
 
-def _base_model(model: nn.Module) -> nn.Module:
-    """Return the inner transformer body (e.g. model.model for LlamaForCausalLM)."""
-    for attr in ("model", "transformer", "gpt_neox", "model.decoder"):
-        base = getattr(model, attr, None)
-        if base is not None:
-            return base
-    return model
-
-
-def _get_final_norm(base_model: nn.Module) -> nn.Module:
-    for name in ("norm", "ln_f", "final_layer_norm"):
-        mod = getattr(base_model, name, None)
-        if mod is not None:
-            return mod
-    raise JSpaceError("Could not locate final normalization module")
-
-
 def _get_layer_block(model: nn.Module, layer_idx: int) -> nn.Module:
     """Return decoder block at layer_idx from the inner transformer body."""
-    base = _base_model(model)
-    for container_name in ("layers", "h"):
-        container = getattr(base, container_name, None)
-        if container is not None and layer_idx < len(container):
-            return container[layer_idx]
+    _, container = _layer_container(model)
+    if layer_idx < len(container):
+        return container[layer_idx]
     raise JSpaceError(f"Could not locate layer {layer_idx}")
 
 
 @contextlib.contextmanager
 def _model_dtype(model: nn.Module, dtype: torch.dtype):
-    """Temporarily cast all parameters and buffers of a model to dtype."""
-    original_dtypes: dict[str, torch.dtype] = {}
+    """Temporarily cast all parameters and buffers to dtype and restore them exactly.
+
+    Stores both dtype and device so that models split via accelerate return to
+    their original per-tensor placements after the training VJP pass.
+    """
+    original: dict[str, tuple[torch.dtype, torch.device]] = {}
     with torch.no_grad():
         for name, tensor in list(model.named_parameters()) + list(model.named_buffers()):
-            original_dtypes[name] = tensor.dtype
+            original[name] = (tensor.dtype, tensor.device)
         model.to(dtype)
     try:
         yield
     finally:
         with torch.no_grad():
             for name, tensor in list(model.named_parameters()) + list(model.named_buffers()):
-                if name in original_dtypes:
-                    tensor.data = tensor.data.to(original_dtypes[name])
+                if name in original:
+                    orig_dtype, orig_device = original[name]
+                    tensor.data = tensor.data.to(orig_dtype)
+                    if tensor.device != orig_device:
+                        tensor.data = tensor.data.to(orig_device)
 
 
 def _attach_frozen_qk_hooks(model: nn.Module) -> list:
@@ -124,9 +112,7 @@ def _run_from_layer(
         return_norm_input = False
 
     if layer_idx > capture_layer:
-        raise JSpaceError(
-            f"source layer {layer_idx} cannot be after target layer {capture_layer}"
-        )
+        raise JSpaceError(f"source layer {layer_idx} cannot be after target layer {capture_layer}")
 
     if layer_idx == capture_layer:
         return h_l
@@ -141,7 +127,10 @@ def _run_from_layer(
     if capture_layer + 1 < num_layers:
         residual_after_target = _get_layer_block(model, capture_layer + 1)
     else:
-        residual_after_target = _get_final_norm(base)
+        final_norm = _norm_module(model)
+        if final_norm is None:
+            raise JSpaceError("Could not locate final normalization module")
+        residual_after_target = final_norm
     capture_handle = residual_after_target.register_forward_pre_hook(capture_block_input)
 
     def replace_source_input(module, input_tuple):
@@ -166,7 +155,9 @@ def _run_from_layer(
 
     if return_norm_input:
         # Original behavior: pre-final-norm residual.
-        final_norm = _get_final_norm(base)
+        final_norm = _norm_module(model)
+        if final_norm is None:
+            raise JSpaceError("Could not locate final normalization module")
         norm_input: list[torch.Tensor | None] = [None]
 
         def capture_norm_input(module, input_tuple):

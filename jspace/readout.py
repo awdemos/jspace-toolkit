@@ -5,7 +5,6 @@ from collections.abc import Callable
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import PreTrainedTokenizer
 
 from jspace import JSpaceError
 
@@ -25,9 +24,7 @@ def _project(
 
 def _check_token_id(token_id: int, vocab_size: int) -> None:
     if not 0 <= token_id < vocab_size:
-        raise JSpaceError(
-            f"token_id {token_id} out of range (vocab_size={vocab_size})"
-        )
+        raise JSpaceError(f"token_id {token_id} out of range (vocab_size={vocab_size})")
 
 
 def lens_readout(
@@ -35,14 +32,16 @@ def lens_readout(
     J_l: np.ndarray,
     W_U: torch.Tensor,
     norm_fn: Callable[[torch.Tensor], torch.Tensor],
-    tokenizer: PreTrainedTokenizer,
+    tokenizer: object | None = None,
     top_k: int = 10,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Decode an intermediate residual stream into a token distribution.
 
-    Returns (top_k_token_ids, top_k_probabilities).  If top_k exceeds the
-    vocabulary size it is clamped silently.
+    The `tokenizer` argument is deprecated and kept for backward compatibility;
+    it is not used. Returns (top_k_token_ids, top_k_probabilities). If top_k
+    exceeds the vocabulary size it is clamped silently.
     """
+    del tokenizer
     logits = _project(h_l, J_l, W_U, norm_fn)
     probs = F.softmax(logits, dim=-1)
     k = min(top_k, probs.shape[-1])
@@ -56,8 +55,13 @@ def token_logit(
     W_U: torch.Tensor,
     norm_fn: Callable[[torch.Tensor], torch.Tensor],
     token_id: int,
+    tokenizer: object | None = None,
 ) -> float:
-    """Return the logit for a single token_id."""
+    """Return the logit for a single token_id.
+
+    `tokenizer` is accepted for backward compatibility and ignored.
+    """
+    del tokenizer
     logits = _project(h_l, J_l, W_U, norm_fn)
     _check_token_id(token_id, logits.shape[-1])
     return logits[token_id].item()

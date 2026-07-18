@@ -14,9 +14,7 @@ def test_readout_produces_token_distribution():
     h = torch.randn(model.config.n_embd)
     J = np.eye(model.config.n_embd)
     W_U = get_unembedding_matrix(model)
-    topk_indices, topk_probs = lens_readout(
-        h, J, W_U, normalize_fn(model), tokenizer, top_k=5
-    )
+    topk_indices, topk_probs = lens_readout(h, J, W_U, normalize_fn(model), tokenizer, top_k=5)
     assert topk_indices.shape == (5,)
     assert (topk_probs > 0).all()
     logit = token_logit(h, J, W_U, normalize_fn(model), tokenizer.encode(" the")[0])

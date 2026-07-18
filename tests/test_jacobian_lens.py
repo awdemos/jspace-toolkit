@@ -15,9 +15,9 @@ from jspace.utils import get_cache_dir, get_position_ids, model_fingerprint
 def test_jacobian_lens_shape_and_cache(tmp_path):
     model, tokenizer = load_model("sshleifer/tiny-gpt2", torch.device("cpu"), torch.float32)
     prompts = ["The cat sat on the mat."] * 2
-    corpus = tokenizer(
-        prompts, return_tensors="pt", padding=True, truncation=True, max_length=16
-    )["input_ids"]
+    corpus = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=16)[
+        "input_ids"
+    ]
     # Use the last layer as target so every source layer is valid for this 2-layer model.
     target_layer = layer_indices(model)[-1]
     cache_dir = get_cache_dir(
@@ -99,20 +99,16 @@ def test_future_position_averaging_uniform_over_triples(monkeypatch):
     # Use a position-dependent scalar so the Jacobian reveals the normalization.
     position_weight = torch.arange(T, dtype=torch.float32)
 
-    def mock_run_from_layer(
-        model, layer_idx, h_l, input_ids, attention_mask, target_layer=None
-    ):
+    def mock_run_from_layer(model, layer_idx, h_l, input_ids, attention_mask, target_layer=None):
         return h_l * position_weight.view(1, T, 1)
 
     monkeypatch.setattr(
         "jspace.jacobian_lens._capture_h_l",
-        lambda model, ids, mask, layer_idx: ids.unsqueeze(-1)
-        .to(torch.float32)
-        .expand(-1, -1, d_model),
+        lambda model, ids, mask, layer_idx: (
+            ids.unsqueeze(-1).to(torch.float32).expand(-1, -1, d_model)
+        ),
     )
-    monkeypatch.setattr(
-        "jspace.jacobian_lens._run_from_layer", mock_run_from_layer
-    )
+    monkeypatch.setattr("jspace.jacobian_lens._run_from_layer", mock_run_from_layer)
 
     J = _average_jacobian_for_layer(
         model, input_ids, attention_mask, layer_idx=0, output_dim_chunk=16
@@ -124,8 +120,8 @@ def test_future_position_averaging_uniform_over_triples(monkeypatch):
     triple_mask = causal.unsqueeze(0) * valid.unsqueeze(1) * valid.unsqueeze(2)
     triple_count = triple_mask.sum().item()
     weighted_sum = (
-        position_weight.to(torch.float64).unsqueeze(0).unsqueeze(-1) * triple_mask
-    ).sum().item()
+        (position_weight.to(torch.float64).unsqueeze(0).unsqueeze(-1) * triple_mask).sum().item()
+    )
     expected_diag = weighted_sum / (triple_count + 1e-12)
 
     expected = torch.eye(d_model, dtype=torch.float64) * expected_diag

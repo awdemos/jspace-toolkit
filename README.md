@@ -48,6 +48,27 @@ python -m scripts.train_lens \
 
 The entry point is also registered as `train-jspace-lens` after pip install.
 
+### CKA workspace-geometry plot
+
+```bash
+# 1. Build a tiny corpus
+python scripts/prepare_corpus.py --n 256 --out corpus.json
+
+# 2. Compute the CKA workspace-geometry plot
+python -m scripts.workspace_geometry \
+  --model sshleifer/tiny-gpt2 \
+  --corpus corpus.json \
+  --max-positions 128 \
+  --dtype float32 \
+  --n-probes 1024
+
+# Outputs land in workspace_out/:
+#   cka_block.png  - heatmap of layer-by-layer CKA with inferred workspace overlay
+#   metrics.json - workspace boundaries + CKA statistics
+```
+
+`--n-probes` controls how many vocabulary tokens are used as shared probes for the geometry (default 4096). For tiny models on CPU, use a smaller value such as 256 or 512 to keep memory low.
+
 ---
 
 ## What the code looks like
@@ -82,9 +103,19 @@ readout_probs = lens_readout(
 print(tokenizer.decode(readout_probs.argmax(dim=-1)))
 
 # Decompose a hidden state into sparse J-space coefficients
-coeffs, residual = decompose_jspace(
+# Pass the pre-built dictionary V = W_U @ J_l.T ...
+coeffs, h_J, h_perp = decompose_jspace(
+    hidden_state=...,
+    V=V,
+    k=10,
+    non_negative=True,
+)
+
+# ...or pass J_l and W_U and let the function build V for you.
+coeffs, h_J, h_perp = decompose_jspace(
     hidden_state=...,
     J_l=J[8],
+    W_U=get_unembedding_matrix(model),
     k=10,
     non_negative=True,
 )
@@ -102,11 +133,6 @@ edited = apply_intervention(
 )
 ```
 
-See `demo.ipynb` for a complete worked example on a small model, including CKA workspace plots and inferred workspace boundaries.
-
----
-
-## Project layout
 
 ```
 jspace/
@@ -118,8 +144,9 @@ jspace/
 ├── discovery.py      # CKA / kurtosis / accuracy workspace discovery
 └── utils.py          # memory-mapped cache helpers
 scripts/
-├── prepare_corpus.py # tiny corpus generator for demos
-├── train_lens.py     # CLI entry point for training
+├── prepare_corpus.py     # tiny corpus generator for demos
+├── train_lens.py         # CLI entry point for training
+├── workspace_geometry.py # CKA workspace-geometry plot + metrics
 └── __init__.py
 tests/                # pytest suite using sshleifer/tiny-gpt2
 demo.ipynb            # interactive walkthrough

@@ -80,8 +80,7 @@ def main():
     )
 
     print(
-        f"Training J-Lens for {args.model} target_layer={target_layer} "
-        f"frozen_qk={args.frozen_qk}"
+        f"Training J-Lens for {args.model} target_layer={target_layer} frozen_qk={args.frozen_qk}"
     )
     try:
         train_jacobian_lens(

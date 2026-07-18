@@ -17,15 +17,18 @@ def centered_kernel_alignment(X: torch.Tensor, Y: torch.Tensor) -> float:
     """CKA similarity between two matrices [n, d]."""
     X = X - X.mean(dim=0, keepdim=True)
     Y = Y - Y.mean(dim=0, keepdim=True)
-    hsic = torch.trace(X @ X.T @ Y @ Y.T)
-    norm_x = torch.trace(X @ X.T @ X @ X.T).sqrt()
-    norm_y = torch.trace(Y @ Y.T @ Y @ Y.T).sqrt()
-    return (hsic / (norm_x * norm_y + 1e-9)).item()
+    XtY = X @ Y.T
+    XtX = X @ X.T
+    YtY = Y @ Y.T
+    hsic = float((XtY * XtY).sum())
+    norm_x = float((XtX * XtX).sum() ** 0.5)
+    norm_y = float((YtY * YtY).sum() ** 0.5)
+    return hsic / (norm_x * norm_y + 1e-9)
 
 
 def _excess_kurtosis(readouts: torch.Tensor) -> float:
-    """Excess kurtosis of a 1-D distribution."""
-    return float(scipy_kurtosis(readouts.detach().cpu().numpy(), fisher=True))
+    """Excess kurtosis of a token-readout distribution."""
+    return float(scipy_kurtosis(readouts.detach().cpu().numpy().ravel(), fisher=True))
 
 
 def compute_discovery_metrics(
@@ -35,15 +38,25 @@ def compute_discovery_metrics(
     corpus: torch.Tensor,
     W_U: torch.Tensor,
     norm_fn: Callable[[torch.Tensor], torch.Tensor],
+    layers: list[int] | None = None,
+    probe_ids: torch.Tensor | None = None,
 ) -> dict[str, np.ndarray]:
-    """Compute CKA, kurtosis, accuracy, and autocorrelation by layer."""
+    """Compute CKA, kurtosis, accuracy, and autocorrelation by layer.
+
+    If `layers` is omitted, all model layers are used. Pass a subset when the
+    J-Lens was trained only up to a target layer.  If `probe_ids` is provided,
+    CKA is computed over only those token rows (matching the article's shared
+    probe-token geometry); otherwise the full vocabulary is used.
+    """
     from jspace.model_adapter import layer_indices
 
     device = next(model.parameters()).device
-    layers = layer_indices(model)
+    if layers is None:
+        layers = layer_indices(model)
+    W_probe = W_U if probe_ids is None else W_U[probe_ids]
     V_by_layer = {
         layer: F.linear(
-            W_U.to(device, torch.float32),
+            W_probe.to(device, torch.float32),
             torch.from_numpy(J[layer]).to(device, torch.float32).t(),
         )
         for layer in layers
@@ -76,7 +89,9 @@ def compute_discovery_metrics(
         kurt[idx] = _excess_kurtosis(probs)
 
         preds = logits.argmax(dim=-1)
-        acc[idx] = float(((preds == flat_targets) & valid.bool()).float().sum() / (valid.sum() + 1e-9))
+        acc[idx] = float(
+            ((preds == flat_targets) & valid.bool()).float().sum() / (valid.sum() + 1e-9)
+        )
 
         top1 = preds.reshape(corpus_batch.shape[0], -1)
         shifted = torch.roll(top1, shifts=-1, dims=1)
