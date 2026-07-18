@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Records the README demo session showcasing the toolkit's visual output.
+#
+# Record and render with:
+#   asciinema rec --cols 110 --rows 36 -c scripts/record_readme_demo.sh demo.cast
+#   agg --speed 3 --font-size 16 demo.cast assets/beautiful_output_demo.gif
 set -e
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,71 +33,38 @@ type_line() {
 
 clear
 
-type_line "# J-Space Toolkit — workspace geometry demo"
+type_line "# J-Space Toolkit — workspace geometry, beautifully rendered"
 sleep 0.3
 
-line1="python scripts/prepare_corpus.py --n 128 --out corpus.json"
-type_line "$line1"
+type_line "python scripts/prepare_corpus.py --n 8 --out corpus.json"
 sleep 0.2
-python "$REPO_DIR/scripts/prepare_corpus.py" --n 128 --out corpus.json --workspace .
-sleep 0.5
+python "$REPO_DIR/scripts/prepare_corpus.py" --n 8 --out corpus.json --workspace .
+sleep 0.4
 
 type_line "python -m scripts.workspace_geometry \\"
-type_line "    --model sshleifer/tiny-gpt2 \\"
-type_line "    --corpus corpus.json \\"
-type_line "    --max-positions 16 \\"
-type_line "    --n-probes 64 \\"
-type_line "    --target-layer 1"
+type_line "    --model gpt2 --corpus corpus.json --n-probes 256"
 sleep 0.2
 PYTHONPATH="$REPO_DIR" python -m scripts.workspace_geometry \
-  --model sshleifer/tiny-gpt2 \
+  --model gpt2 \
   --corpus corpus.json \
   --output-dir workspace_out \
   --cache-dir lens_cache \
   --workspace . \
   --max-positions 16 \
-  --n-probes 64 \
+  --n-probes 256 \
   --dtype float32 \
-  --target-layer 1 \
-  2> >(grep -v -E "Warning: You are sending unauthenticated requests|\[transformers\].*torch_dtype is deprecated|GPT2LMHeadModel LOAD REPORT|UNEXPECTED| transformer\.h\.|Notes:|can be ignored" >&2)
-sleep 0.5
+  2> >(grep -v -E "Warning: You are sending unauthenticated requests|Loading weights|LOAD REPORT|UNEXPECTED| transformer\.h\.|Notes:|can be ignored|^Key |^---|^$" >&2)
+sleep 0.8
 
-type_line "cat workspace_out/metrics.json"
+type_line "python scripts/inline_image.py workspace_out/cka_block.png --width 72"
 sleep 0.2
-python - <<'PY'
-import json
-with open("workspace_out/metrics.json") as f:
-    m = json.load(f)
-print(f"model:            {m['model']}")
-print(f"target_layer:     {m['target_layer']}")
-print(f"n_layers:         {m['n_layers']}")
-print(f"workspace band:   [{m['workspace_start']}, {m['workspace_end']}]")
-print(f"mean CKA:         {m['mean_cka']:.4f}")
-PY
-sleep 0.5
-
-type_line "python -c 'print compact CKA matrix'"
-sleep 0.2
-echo ""
-echo "J-Lens workspace geometry (CKA) — sshleifer/tiny-gpt2"
-echo "Each cell = CKA similarity between layer outputs"
-echo ""
-python - <<'PY'
-import json, numpy as np
-with open("workspace_out/metrics.json") as f:
-    m = json.load(f)
-cka = np.array(m["cka_block"])
-print("       " + "".join(f"{i:6d}" for i in range(cka.shape[1])))
-print("     " + "-" * (6 * cka.shape[1] + 2))
-for i, row in enumerate(cka):
-    print(f"L{i:2d} |" + "".join(f"{v:6.3f}" for v in row))
-print("")
-print(f"Inferred workspace band: layers {m['workspace_start']} to {m['workspace_end']}")
-print(f"Mean CKA: {m['mean_cka']:.4f}")
-PY
-sleep 0.5
+python "$REPO_DIR/scripts/inline_image.py" workspace_out/cka_block.png --width 72
+sleep 1.0
 
 type_line "ls -lh workspace_out/"
 sleep 0.2
 ls -lh workspace_out/
-sleep 0.5
+sleep 0.4
+
+type_line "# open workspace_out/report.html for the full interactive report"
+sleep 1.5
