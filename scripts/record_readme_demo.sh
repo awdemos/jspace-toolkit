@@ -13,19 +13,21 @@ cd "$DEMO_DIR"
 # Use the repo's virtual environment.
 source "$REPO_DIR/.venv/bin/activate"
 
+export HF_TOKEN="${HF_TOKEN:-}"
+
 clear
 echo "# J-Space Toolkit — workspace geometry demo"
-sleep 1.5
+sleep 2.0
 
 echo ""
 echo "# Step 1: prepare a tiny corpus"
-sleep 1.0
-python "$REPO_DIR/scripts/prepare_corpus.py" --n 128 --out corpus.json --workspace .
 sleep 1.5
+python "$REPO_DIR/scripts/prepare_corpus.py" --n 128 --out corpus.json --workspace .
+sleep 2.0
 
 echo ""
 echo "# Step 2: compute the CKA workspace-geometry plot"
-sleep 1.0
+sleep 1.5
 PYTHONPATH="$REPO_DIR" python -m scripts.workspace_geometry \
   --model sshleifer/tiny-gpt2 \
   --corpus corpus.json \
