@@ -15,25 +15,35 @@ source "$REPO_DIR/.venv/bin/activate"
 
 export HF_TOKEN="${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-demo}}"
 
+# Simulate typing a line at a human-like speed.
+type_line() {
+    local line="$1"
+    printf '$ '
+    for (( i=0; i<${#line}; i++ )); do
+        printf '%s' "${line:$i:1}"
+        sleep 0.015
+    done
+    printf '\n'
+}
+
 clear
 
-echo "$ # J-Space Toolkit — workspace geometry demo"
-sleep 0.5
+type_line "# J-Space Toolkit — workspace geometry demo"
+sleep 0.3
 
-echo ""
-echo "$ python scripts/prepare_corpus.py --n 128 --out corpus.json"
-sleep 0.5
+line1="python scripts/prepare_corpus.py --n 128 --out corpus.json"
+type_line "$line1"
+sleep 0.2
 python "$REPO_DIR/scripts/prepare_corpus.py" --n 128 --out corpus.json --workspace .
 sleep 0.5
 
-echo ""
-echo "$ python -m scripts.workspace_geometry \\"
-echo "    --model sshleifer/tiny-gpt2 \\"
-echo "    --corpus corpus.json \\"
-echo "    --max-positions 16 \\"
-echo "    --n-probes 64 \\"
-echo "    --target-layer 1"
-sleep 0.5
+type_line "python -m scripts.workspace_geometry \\"
+type_line "    --model sshleifer/tiny-gpt2 \\"
+type_line "    --corpus corpus.json \\"
+type_line "    --max-positions 16 \\"
+type_line "    --n-probes 64 \\"
+type_line "    --target-layer 1"
+sleep 0.2
 PYTHONPATH="$REPO_DIR" python -m scripts.workspace_geometry \
   --model sshleifer/tiny-gpt2 \
   --corpus corpus.json \
@@ -47,9 +57,8 @@ PYTHONPATH="$REPO_DIR" python -m scripts.workspace_geometry \
   2> >(grep -v -E "Warning: You are sending unauthenticated requests|\[transformers\].*torch_dtype is deprecated|GPT2LMHeadModel LOAD REPORT|UNEXPECTED| transformer\.h\.|Notes:|can be ignored" >&2)
 sleep 0.5
 
-echo ""
-echo "$ cat workspace_out/metrics.json"
-sleep 0.5
+type_line "cat workspace_out/metrics.json"
+sleep 0.2
 python - <<'PY'
 import json
 with open("workspace_out/metrics.json") as f:
@@ -62,14 +71,12 @@ print(f"mean CKA:         {m['mean_cka']:.4f}")
 PY
 sleep 0.5
 
-echo ""
-echo "$ python scripts/inline_image.py workspace_out/cka_block.png --width 70"
-sleep 0.5
+type_line "python scripts/inline_image.py workspace_out/cka_block.png --width 70"
+sleep 0.2
 PYTHONPATH="$REPO_DIR" python "$REPO_DIR/scripts/inline_image.py" workspace_out/cka_block.png --width 70
 sleep 0.5
 
-echo ""
-echo "$ ls -lh workspace_out/"
-sleep 0.5
+type_line "ls -lh workspace_out/"
+sleep 0.2
 ls -lh workspace_out/
 sleep 0.5
