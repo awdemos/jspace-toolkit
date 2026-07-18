@@ -122,6 +122,10 @@ def _plot_cka_block(
     ax.set_xlabel("Source layer")
     ax.set_ylabel("Target layer")
     ax.set_title(f"J-Lens workspace geometry (CKA) — {model_name}\nmatrix entry = CKA similarity between layer outputs")
+    for i in range(len(layers)):
+        for j in range(len(layers)):
+            text_color = "white" if cka[i, j] < 0.5 else "black"
+            ax.text(j, i, f"{cka[i, j]:.2f}", ha="center", va="center", color=text_color, fontsize=9)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="CKA similarity")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
