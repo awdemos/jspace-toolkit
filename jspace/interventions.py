@@ -80,10 +80,12 @@ def _intervention_hook(
     output,
 ):
     hidden = output[0] if isinstance(output, tuple) else output
-    modified = intervention_fn(hidden.squeeze(0), layer_idx)
+    # intervention_fn operates on a single [T, d_model] sequence; apply it
+    # independently per batch element so batched inputs keep their shape.
+    modified = torch.stack([intervention_fn(h, layer_idx) for h in hidden])
     if isinstance(output, tuple):
-        return (modified.unsqueeze(0),) + output[1:]
-    return modified.unsqueeze(0)
+        return (modified,) + output[1:]
+    return modified
 
 
 def apply_intervention(
@@ -91,6 +93,7 @@ def apply_intervention(
     intervention_fn: Callable[[torch.Tensor, int], torch.Tensor],
     layer_band: tuple[int, int],
     input_ids: torch.Tensor,
+    attention_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Apply an intervention across a layer band during a forward pass."""
     start, end = layer_band
@@ -99,5 +102,5 @@ def apply_intervention(
         for layer_idx in range(start, end + 1)
     }
     with torch.no_grad(), temporary_forward_hooks(model, hooks):
-        outputs = model(input_ids)
+        outputs = model(input_ids, attention_mask=attention_mask)
     return outputs.logits

@@ -31,11 +31,15 @@ def model_fingerprint(
     max_positions: int = 128,
     dtype: str = "float32",
     output_dim_chunk: int = 16,
+    revision: str | None = None,
+    corpus_hash: str | None = None,
 ) -> str:
     """Stable cache key for a trained J-Lens run.
 
     Includes all hyper-parameters that materially change the resulting J_l
-    matrices so that different runs do not collide in the cache.
+    matrices so that different runs do not collide in the cache. Pass
+    ``corpus_hash`` (e.g. from :func:`hash_file`) so retraining on a different
+    corpus does not silently reuse stale cached matrices.
     """
     payload = json.dumps(
         {
@@ -45,6 +49,8 @@ def model_fingerprint(
             "max_positions": max_positions,
             "dtype": dtype,
             "output_dim_chunk": output_dim_chunk,
+            "revision": revision,
+            "corpus_hash": corpus_hash,
         },
         sort_keys=True,
     )
@@ -61,6 +67,11 @@ def get_cache_dir(base: Path | str, fingerprint: str) -> Path:
 
 def _checksum_path(safetensors_path: Path) -> Path:
     return safetensors_path.with_suffix(".sha256")
+
+
+def hash_file(path: Path | str) -> str:
+    """Return the SHA-256 hex digest of a file's contents."""
+    return _compute_checksum(Path(path))
 
 
 def _compute_checksum(path: Path) -> str:
@@ -86,9 +97,7 @@ def _validate_shape(shape: tuple[int, ...]) -> None:
 def save_lens_layer(cache_dir: Path, layer_idx: int, matrix: np.ndarray) -> None:
     safetensors_path = cache_dir / f"J_{layer_idx}.safetensors"
     st_numpy.save_file({"J": matrix}, safetensors_path)
-    _checksum_path(safetensors_path).write_text(
-        _compute_checksum(safetensors_path) + "\n"
-    )
+    _checksum_path(safetensors_path).write_text(_compute_checksum(safetensors_path) + "\n")
     os.chmod(cache_dir, _CACHE_DIR_MODE)
 
 

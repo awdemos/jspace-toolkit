@@ -121,7 +121,7 @@ readout_probs = lens_readout(
 print(tokenizer.decode(readout_probs.argmax(dim=-1)))
 
 # Decompose a hidden state into sparse J-space coefficients
-# Pass the pre-built dictionary V = W_U @ J_l.T ...
+# Pass the pre-built dictionary V = W_U @ J_l ...
 coeffs, h_J, h_perp = decompose_jspace(
     hidden_state=...,
     V=V,

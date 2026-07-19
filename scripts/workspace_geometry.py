@@ -21,7 +21,7 @@ from jspace.discovery import (
 )
 from jspace.jacobian_lens import train_jacobian_lens
 from jspace.model_adapter import get_unembedding_matrix, layer_indices, load_model, normalize_fn
-from jspace.utils import get_cache_dir, model_fingerprint
+from jspace.utils import get_cache_dir, hash_file, model_fingerprint
 from jspace.validation import validate_path, validate_workspace
 from jspace.viz import (
     config_table,
@@ -50,7 +50,12 @@ DEFAULT_PROBE_COUNT = 4096
 
 def _parse_probe_ids(probe_ids_str: str, vocab_size: int) -> list[int]:
     """Parse a comma-separated list of probe token ids."""
-    ids = [int(x.strip()) for x in probe_ids_str.split(",")]
+    try:
+        ids = [int(x.strip()) for x in probe_ids_str.split(",")]
+    except ValueError as exc:
+        raise JSpaceError(
+            f"invalid --probe-ids {probe_ids_str!r}: expected comma-separated integers"
+        ) from exc
     for token_id in ids:
         if not 0 <= token_id < vocab_size:
             raise JSpaceError(f"probe token_id {token_id} out of range (vocab_size={vocab_size})")
@@ -64,8 +69,8 @@ def _default_probe_ids(tokenizer, n: int) -> list[int]:
     return ids[:n]
 
 
-def _load_corpus(path: Path, tokenizer, max_positions: int) -> torch.Tensor:
-    """Load a JSON corpus and tokenize it."""
+def _load_corpus(path: Path, tokenizer, max_positions: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Load a JSON corpus and tokenize it; returns (input_ids, attention_mask)."""
     with path.open() as f:
         prompts = json.load(f)
     enc = tokenizer(
@@ -75,7 +80,7 @@ def _load_corpus(path: Path, tokenizer, max_positions: int) -> torch.Tensor:
         truncation=True,
         max_length=max_positions,
     )
-    return enc["input_ids"]
+    return enc["input_ids"], enc["attention_mask"]
 
 
 def build_V_l(
@@ -85,14 +90,15 @@ def build_V_l(
     gamma: float = 1.0,
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    """Build centered token geometry V_l = W_U[probe_ids] @ J_l.T.
+    """Build centered token geometry V_l = W_U[probe_ids] @ J_l.
 
-    Following the article notation: V_l = (W_U[probe_ids] * gamma) @ J_l.T.
+    Following the article notation, the J-lens vectors are the rows of
+    W_U @ J_l: V_l = (W_U[probe_ids] * gamma) @ J_l.
     """
     device = W_U.device
     W_probe = W_U[probe_ids].to(device, dtype)
     J = torch.from_numpy(J_l).to(device, dtype)
-    V = gamma * torch.matmul(W_probe, J.t())
+    V = gamma * torch.matmul(W_probe, J)
     return V - V.mean(dim=0, keepdim=True)
 
 
@@ -165,8 +171,13 @@ def main() -> None:
         revision=args.model_revision,
         allow_unlisted=args.allow_unlisted_model,
     )
-    corpus = _load_corpus(corpus_path, tokenizer, args.max_positions)
+    corpus, attn_mask = _load_corpus(corpus_path, tokenizer, args.max_positions)
     layers = layer_indices(model)
+    if args.target_layer is None and len(layers) < 2:
+        raise _fail(
+            f"{args.model} has {len(layers)} layer(s); "
+            "need at least 2 to pick a penultimate target layer"
+        )
     target_layer = args.target_layer if args.target_layer is not None else layers[-2]
 
     cache_dir = get_cache_dir(
@@ -178,6 +189,8 @@ def main() -> None:
             max_positions=args.max_positions,
             dtype=args.dtype,
             output_dim_chunk=args.output_dim_chunk,
+            revision=args.model_revision,
+            corpus_hash=hash_file(corpus_path),
         ),
     )
 
@@ -204,14 +217,18 @@ def main() -> None:
         batch_size=args.batch_size,
         output_dim_chunk=args.output_dim_chunk,
         frozen_qk=args.frozen_qk,
+        attention_mask=attn_mask,
     )
 
     W_U = get_unembedding_matrix(model)
     vocab_size = W_U.shape[0]
-    if args.probe_ids is not None:
-        probe_ids_list = _parse_probe_ids(args.probe_ids, vocab_size)
-    else:
-        probe_ids_list = _default_probe_ids(tokenizer, args.n_probes)
+    try:
+        if args.probe_ids is not None:
+            probe_ids_list = _parse_probe_ids(args.probe_ids, vocab_size)
+        else:
+            probe_ids_list = _default_probe_ids(tokenizer, args.n_probes)
+    except JSpaceError as exc:
+        raise _fail(str(exc)) from exc
     probe_ids = torch.tensor(probe_ids_list, dtype=torch.long)
 
     console.print(f"[bold]Building token geometry for[/] {len(probe_ids_list)} probe tokens")

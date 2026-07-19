@@ -25,7 +25,7 @@ def _resolve_V(
         raise ValueError("Either V or both J_l and W_U must be provided")
     J = torch.from_numpy(J_l).to(device, dtype)
     W = W_U.to(device, dtype)
-    return torch.matmul(W, J.t())
+    return torch.matmul(W, J)
 
 
 def decompose_jspace(
@@ -41,7 +41,7 @@ def decompose_jspace(
 
     V: [vocab, d_model] dictionary of J-lens vectors. Alternatively pass
        J_l [d_model, d_model] and W_U [vocab, d_model]; V is computed as
-       W_U @ J_l.T.
+       W_U @ J_l (rows are the J-lens vectors, as in the paper).
     Returns: coefficients a [vocab], h_J [d_model], h_perp [d_model].
     """
     V_tensor = _resolve_V(V, J_l, W_U, h.device, h.dtype)
@@ -97,22 +97,28 @@ def jspace_occupancy(
     V_np = _build_dictionary(V_tensor)
     residual = h_np.copy()
     prev_error = float(np.linalg.norm(residual))
+    selected: list[int] = []
     for k in range(max_k):
         corr = V_np @ residual
+        # Zero out (not -inf) already-selected atoms: the |corr| argmax below
+        # would otherwise turn -inf into the winning entry.
+        for s in selected:
+            corr[s] = 0.0
         best = int(np.argmax(np.abs(corr)))
-        selected = [best]
-        coeffs, _ = scipy.optimize.nnls(V_np[selected].T, h_np)
-        new_residual = h_np - V_np[selected].T @ coeffs
+        trial = [*selected, best]
+        coeffs, _ = scipy.optimize.nnls(V_np[trial].T, h_np)
+        new_residual = h_np - V_np[trial].T @ coeffs
         new_error = float(np.linalg.norm(new_residual))
         rand_dir = rng.standard_normal(V_np.shape[1]).astype(np.float32)
         rand_dir /= np.linalg.norm(rand_dir) + 1e-9
         rand_improve = max(
             0.0,
-            prev_error - np.linalg.norm(h_np - (h_np @ rand_dir) * rand_dir),
+            prev_error - np.linalg.norm(residual - (residual @ rand_dir) * rand_dir),
         )
         rel_improve = (prev_error - new_error) / (prev_error + 1e-9)
         if rel_improve < threshold * (rand_improve / (prev_error + 1e-9)):
             return k
+        selected = trial
         prev_error = new_error
         residual = new_residual
     return max_k

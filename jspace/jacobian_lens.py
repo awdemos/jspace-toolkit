@@ -1,6 +1,7 @@
 """Train Jacobian Lens matrices J_l."""
 
 import contextlib
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -53,13 +54,43 @@ def _model_dtype(model: nn.Module, dtype: torch.dtype):
 
 
 def _attach_frozen_qk_hooks(model: nn.Module) -> list:
-    """Detach query/key projection outputs so gradients do not flow through them."""
+    """Detach query/key projection outputs so gradients do not flow through them.
+
+    Handles Llama-style separate q/k projections and GPT-2's fused ``c_attn``
+    Conv1D (whose output's first two thirds are Q and K). Warns when nothing
+    matched so the flag is never a silent no-op.
+    """
     handles = []
+
+    def detach_hook(module, inp, out):
+        return out.detach()
+
+    def make_fused_hook(n_embd: int):
+        def hook(module, inp, out):
+            q, k, v = out.split(n_embd, dim=-1)
+            return torch.cat([q.detach(), k.detach(), v], dim=-1)
+
+        return hook
+
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear) and any(
             x in name for x in ("q_proj", "query", "k_proj", "key")
         ):
-            handles.append(module.register_forward_hook(lambda m, inp, out: out.detach()))
+            handles.append(module.register_forward_hook(detach_hook))
+        elif name.endswith("c_attn"):
+            # GPT-2-style fused QKV projection (transformers Conv1D, weight
+            # shape [d_model, 3 * d_model]).
+            weight = getattr(module, "weight", None)
+            if weight is None or weight.dim() != 2 or weight.shape[1] % 3 != 0:
+                continue
+            n_embd = weight.shape[1] // 3
+            handles.append(module.register_forward_hook(make_fused_hook(n_embd)))
+    if not handles:
+        warnings.warn(
+            "frozen_qk=True but no query/key projections matched this "
+            "architecture; the flag has no effect",
+            stacklevel=2,
+        )
     return handles
 
 
@@ -104,12 +135,10 @@ def _run_from_layer(
 
     if target_layer is None:
         capture_layer = num_layers - 1
-        return_norm_input = True
     else:
         if not 0 <= target_layer < num_layers:
             raise JSpaceError(f"target_layer {target_layer} out of range [0, {num_layers})")
         capture_layer = target_layer
-        return_norm_input = False
 
     if layer_idx > capture_layer:
         raise JSpaceError(f"source layer {layer_idx} cannot be after target layer {capture_layer}")
@@ -153,31 +182,9 @@ def _run_from_layer(
     if target_h[0] is None:
         raise JSpaceError("Failed to capture target-layer residual")
 
-    if return_norm_input:
-        # Original behavior: pre-final-norm residual.
-        final_norm = _norm_module(model)
-        if final_norm is None:
-            raise JSpaceError("Could not locate final normalization module")
-        norm_input: list[torch.Tensor | None] = [None]
-
-        def capture_norm_input(module, input_tuple):
-            norm_input[0] = input_tuple[0]
-            return input_tuple
-
-        handle = final_norm.register_forward_pre_hook(capture_norm_input)
-        try:
-            base(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                return_dict=True,
-            )
-        finally:
-            handle.remove()
-        if norm_input[0] is None:
-            raise JSpaceError("Failed to capture pre-final-norm residual")
-        return norm_input[0]
-
+    # When target_layer is None the capture hook sits on the final norm, so
+    # target_h[0] is already the pre-final-norm residual — no second forward
+    # pass is needed.
     return target_h[0]
 
 
@@ -206,6 +213,7 @@ def _average_jacobian_for_layer(
     accum = torch.zeros(d_model, d_model, device="cpu", dtype=torch.float64)
 
     # Disable parameter gradients; we only need gradients w.r.t. h_l.
+    prev_requires_grad = [p.requires_grad for p in model.parameters()]
     for p in model.parameters():
         p.requires_grad_(False)
 
@@ -242,8 +250,8 @@ def _average_jacobian_for_layer(
 
             del z, z_chunk, s_chunk, grads, per_i
     finally:
-        for p in model.parameters():
-            p.requires_grad_(True)
+        for p, flag in zip(model.parameters(), prev_requires_grad, strict=True):
+            p.requires_grad_(flag)
 
     return accum
 
@@ -258,8 +266,22 @@ def train_jacobian_lens(
     batch_size: int = 1,
     output_dim_chunk: int = 16,
     frozen_qk: bool = False,
+    attention_mask: torch.Tensor | None = None,
 ) -> dict[int, np.ndarray]:
-    """Train and cache J_l matrices. Returns dict layer_idx -> numpy matrix."""
+    """Train and cache J_l matrices. Returns dict layer_idx -> numpy matrix.
+
+    Pass the tokenizer's ``attention_mask`` alongside ``corpus`` so padded
+    positions are excluded from the averaged Jacobian; without it the mask is
+    reconstructed from ``pad_token_id``, which not all models define.
+    """
+    if corpus.shape[0] == 0:
+        raise JSpaceError("corpus is empty; nothing to train on")
+    if attention_mask is not None and attention_mask.shape != corpus.shape:
+        raise JSpaceError(
+            f"attention_mask shape {tuple(attention_mask.shape)} does not match "
+            f"corpus shape {tuple(corpus.shape)}"
+        )
+
     layers = layer_indices(model)
     d_model = _d_model(model)
 
@@ -284,18 +306,21 @@ def train_jacobian_lens(
             for start in jl_track(batches, "Training J-Lens"):
                 batch_ids = corpus[start : start + batch_size]
                 B, T = batch_ids.shape
-                pad_id = getattr(model.config, "pad_token_id", None)
-                if pad_id is None:
-                    pad_id = -1
-                attention_mask = (batch_ids != pad_id).to(batch_ids.device)
+                if attention_mask is not None:
+                    batch_mask = attention_mask[start : start + batch_size]
+                else:
+                    pad_id = getattr(model.config, "pad_token_id", None)
+                    if pad_id is None:
+                        pad_id = -1
+                    batch_mask = batch_ids != pad_id
                 device = next(model.parameters()).device
                 batch_ids = batch_ids.to(device)
-                attention_mask = attention_mask.to(device)
+                batch_mask = batch_mask.to(device)
                 for layer_idx in source_layers:
                     grad_mat = _average_jacobian_for_layer(
                         model,
                         batch_ids,
-                        attention_mask,
+                        batch_mask,
                         layer_idx,
                         output_dim_chunk=output_dim_chunk,
                         target_layer=target_layer,
