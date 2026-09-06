@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import torch
@@ -122,7 +123,7 @@ def load_lens_layer(cache_dir: Path, layer_idx: int) -> np.ndarray:
     matrix = data["J"]
     shape = tuple(int(dim) for dim in matrix.shape)
     _validate_shape(shape)
-    return np.array(matrix)
+    return cast(np.ndarray, np.asarray(matrix, dtype=np.float32))
 
 
 def lens_cache_exists(cache_dir: Path, layer_indices: list) -> bool:
