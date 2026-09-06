@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import base64
 import html
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence, Sized
 from pathlib import Path
+from typing import cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -114,7 +115,7 @@ def jl_track(iterable: Iterable, description: str) -> Iterable:
         console=get_console(),
         transient=True,
     )
-    total = len(iterable) if hasattr(iterable, "__len__") else None
+    total = len(iterable) if isinstance(iterable, Sized) else None
     with progress:
         task = progress.add_task(description, total=total)
         for item in iterable:
@@ -159,7 +160,7 @@ def plot_cka_block(
         ax.add_patch(rect)
 
     tick_step = max(1, len(layers) // 8)
-    ticks = np.arange(0, len(layers), tick_step)
+    ticks = [int(i) for i in np.arange(0, len(layers), tick_step)]
     ax.set_xticks(ticks, [str(layers[i]) for i in ticks])
     ax.set_yticks(ticks, [str(layers[i]) for i in ticks])
     ax.set_xlabel("Source layer")
@@ -201,7 +202,7 @@ def plot_cka_block(
 
     if out_path is not None:
         fig.savefig(out_path, dpi=200, facecolor=fig.get_facecolor())
-    return fig
+    return cast(Figure, fig)
 
 
 def plot_layer_metrics(
@@ -243,7 +244,7 @@ def plot_layer_metrics(
 
     if out_path is not None:
         fig.savefig(out_path, dpi=200, facecolor=fig.get_facecolor())
-    return fig
+    return cast(Figure, fig)
 
 
 _CSS = (

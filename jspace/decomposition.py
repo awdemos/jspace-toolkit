@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import scipy.optimize
 import torch
 
 
 def _build_dictionary(V: torch.Tensor) -> np.ndarray:
-    return V.detach().cpu().numpy()
+    return cast(np.ndarray, V.detach().cpu().numpy())
 
 
 def _resolve_V(
@@ -111,14 +113,16 @@ def jspace_occupancy(
         new_error = float(np.linalg.norm(new_residual))
         rand_dir = rng.standard_normal(V_np.shape[1]).astype(np.float32)
         rand_dir /= np.linalg.norm(rand_dir) + 1e-9
-        rand_improve = max(
-            0.0,
-            prev_error - np.linalg.norm(residual - (residual @ rand_dir) * rand_dir),
+        rand_improve = float(
+            max(
+                0.0,
+                float(prev_error) - float(np.linalg.norm(residual - (residual @ rand_dir) * rand_dir)),
+            )
         )
-        rel_improve = (prev_error - new_error) / (prev_error + 1e-9)
-        if rel_improve < threshold * (rand_improve / (prev_error + 1e-9)):
+        rel_improve = float(np.subtract(prev_error, new_error)) / float(prev_error + 1e-9)
+        if rel_improve < threshold * (rand_improve / float(prev_error + 1e-9)):
             return k
         selected = trial
-        prev_error = new_error
+        prev_error = float(new_error)
         residual = new_residual
     return max_k
