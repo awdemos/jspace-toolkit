@@ -20,11 +20,15 @@ def test_decomposition_accepts_j_l_and_w_u():
     d = 64
     vocab = 100
     h = torch.randn(d)
-    J_l = np.eye(d).astype(np.float32)
+    # Non-symmetric J_l: only the W_U @ J_l (rows = J-lens vectors) geometry
+    # matches the reference decomposition below; W_U @ J_l.T would not.
+    J_l = (np.arange(d * d, dtype=np.float64).reshape(d, d) / d**2).astype(np.float32)
     W_U = torch.randn(vocab, d)
     a, h_J, h_perp = decompose_jspace(h, J_l=J_l, W_U=W_U, k=10)
     assert a.shape == (vocab,)
     assert torch.allclose(h, h_J + h_perp, atol=1e-4)
+    _, h_J_ref, _ = decompose_jspace(h, V=W_U @ torch.from_numpy(J_l), k=10)
+    assert torch.allclose(h_J, h_J_ref, atol=1e-4)
 
 
 def test_non_negative_decomposition_returns_non_negative_coefficients():
@@ -88,3 +92,38 @@ def test_non_negative_coeffs_match_nnls_refit():
         torch.from_numpy(expected).float(),
         atol=1e-4,
     )
+
+
+def test_occupancy_returns_zero_for_zero_hidden_state():
+    """h = 0 has an empty support; occupancy must stop at k=0, not max_k."""
+    d = 32
+    V = torch.randn(50, d)
+    h = torch.zeros(d)
+    k = jspace_occupancy(h, V=V, max_k=10, threshold=0.0, random_seed=0)
+    assert k == 0
+
+
+def test_occupancy_stops_when_signal_is_exactly_represented():
+    """A 2-sparse h must stop at k=2 even at threshold 0 (residual is 0)."""
+    d = 32
+    V = torch.zeros(50, d)
+    V[3, 0] = 2.0
+    V[17, 1] = 1.5
+    h = V[3] + V[17]
+    k = jspace_occupancy(h, V=V, max_k=10, threshold=0.0, random_seed=0)
+    assert k == 2
+
+
+def test_build_V_l_uses_j_lens_vector_geometry():
+    """scripts.build_V_l rows must be W_U @ J_l, not W_U @ J_l.T."""
+    from scripts.workspace_geometry import build_V_l
+
+    d = 8
+    vocab = 5
+    J_l = np.arange(d * d, dtype=np.float32).reshape(d, d) / d**2  # non-symmetric
+    W_U = torch.randn(vocab, d)
+    probe_ids = torch.tensor([0, 2, 4])
+    V = build_V_l(J_l, W_U, probe_ids)
+    expected = W_U[probe_ids] @ torch.from_numpy(J_l)
+    expected = expected - expected.mean(dim=0, keepdim=True)
+    assert torch.allclose(V, expected)

@@ -10,7 +10,7 @@ from torch import nn
 
 from jspace import JSpaceError
 from jspace.model_adapter import _base_model, _layer_container, _norm_module, layer_indices
-from jspace.utils import get_position_ids, lens_cache_exists, load_lens_layer, save_lens_layer
+from jspace.utils import lens_cache_exists, load_lens_layer, save_lens_layer
 from jspace.viz import jl_track
 
 
@@ -94,6 +94,11 @@ def _attach_frozen_qk_hooks(model: nn.Module) -> list:
     return handles
 
 
+def _position_ids_from_mask(attention_mask: torch.Tensor) -> torch.Tensor:
+    """Positions derived from an attention mask, clamped so left padding maps to 0."""
+    return (attention_mask.cumsum(dim=-1) - 1).clamp_min(0)
+
+
 def _capture_h_l(
     model: nn.Module,
     input_ids: torch.Tensor,
@@ -101,7 +106,35 @@ def _capture_h_l(
     layer_idx: int,
 ) -> torch.Tensor:
     """Capture the residual stream after layer_idx (post-layer residual)."""
-    position_ids = get_position_ids(attention_mask)
+    position_ids = _position_ids_from_mask(attention_mask)
+    num_layers = len(layer_indices(model))
+    if layer_idx + 1 == num_layers:
+        # transformers >= 5.x ties hidden_states[-1] to the post-norm
+        # last_hidden_state, so capture the pre-norm residual via the norm input.
+        final_norm = _norm_module(model)
+        if final_norm is None:
+            raise JSpaceError("Could not locate final normalization module")
+        norm_input: list[torch.Tensor | None] = [None]
+
+        def capture_norm_input(module, input_tuple):
+            norm_input[0] = input_tuple[0]
+            return input_tuple
+
+        handle = final_norm.register_forward_pre_hook(capture_norm_input)
+        try:
+            with torch.no_grad():
+                model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    return_dict=True,
+                )
+        finally:
+            handle.remove()
+        if norm_input[0] is None:
+            raise JSpaceError("Failed to capture pre-final-norm residual")
+        return norm_input[0]
+
     with torch.no_grad():
         out = model(
             input_ids=input_ids,
@@ -131,7 +164,7 @@ def _run_from_layer(
     """
     base = _base_model(model)
     num_layers = len(layer_indices(model))
-    position_ids = get_position_ids(attention_mask)
+    position_ids = _position_ids_from_mask(attention_mask)
 
     if target_layer is None:
         capture_layer = num_layers - 1
@@ -305,7 +338,6 @@ def train_jacobian_lens(
             batches = range(0, corpus.shape[0], batch_size)
             for start in jl_track(batches, "Training J-Lens"):
                 batch_ids = corpus[start : start + batch_size]
-                B, T = batch_ids.shape
                 if attention_mask is not None:
                     batch_mask = attention_mask[start : start + batch_size]
                 else:
@@ -316,6 +348,14 @@ def train_jacobian_lens(
                 device = next(model.parameters()).device
                 batch_ids = batch_ids.to(device)
                 batch_mask = batch_mask.to(device)
+                # Rows with no valid positions contribute nothing; dropping them
+                # keeps their zeros out of the J_l average and its divisor.
+                keep = batch_mask.sum(dim=1) > 0
+                batch_ids = batch_ids[keep]
+                batch_mask = batch_mask[keep]
+                B = batch_ids.shape[0]
+                if B == 0:
+                    continue
                 for layer_idx in source_layers:
                     grad_mat = _average_jacobian_for_layer(
                         model,
@@ -328,6 +368,8 @@ def train_jacobian_lens(
                     J[layer_idx] += grad_mat
                 count += B
 
+            if count == 0:
+                raise JSpaceError("corpus has no valid (unmasked) positions")
             for layer in source_layers:
                 J[layer] = J[layer] / count
 

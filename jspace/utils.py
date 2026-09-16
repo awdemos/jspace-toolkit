@@ -75,6 +75,26 @@ def hash_file(path: Path | str) -> str:
     return _compute_checksum(Path(path))
 
 
+def resolve_model_revision(model_name: str, revision: str | None) -> str | None:
+    """Resolve a model name to a pinned hub commit sha for cache keys.
+
+    Returns ``revision`` unchanged when provided. Local directory paths and
+    any hub failure (network offline, repo not found, huggingface_hub not
+    installed) resolve to None rather than raising.
+    """
+    if revision is not None:
+        return revision
+    if Path(model_name).is_dir():
+        return None
+    try:
+        from huggingface_hub import model_info
+
+        sha: str = model_info(model_name).sha
+        return sha
+    except Exception:
+        return None
+
+
 def _compute_checksum(path: Path) -> str:
     hasher = hashlib.sha256()
     with path.open("rb") as fh:
@@ -123,7 +143,7 @@ def load_lens_layer(cache_dir: Path, layer_idx: int) -> np.ndarray:
     matrix = data["J"]
     shape = tuple(int(dim) for dim in matrix.shape)
     _validate_shape(shape)
-    return cast(np.ndarray, np.asarray(matrix, dtype=np.float32))
+    return cast(np.ndarray, np.array(matrix))
 
 
 def lens_cache_exists(cache_dir: Path, layer_indices: list) -> bool:

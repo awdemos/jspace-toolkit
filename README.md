@@ -92,62 +92,65 @@ python -m scripts.workspace_geometry \
 ## What the code looks like
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from jspace.model_adapter import load_model_and_tokenizer, layer_indices
+import torch
+
+from jspace.model_adapter import (
+    cache_residuals,
+    get_unembedding_matrix,
+    layer_indices,
+    load_model,
+    normalize_fn,
+)
 from jspace.jacobian_lens import train_jacobian_lens
 from jspace.readout import lens_readout
-from jspace.decomposition import decompose_jspace, jspace_occupancy
+from jspace.decomposition import decompose_jspace
 from jspace.interventions import coordinate_swap, apply_intervention
 
-model, tokenizer = load_model_and_tokenizer("gpt2")
-text = "The capital of France is"
-inputs = tokenizer(text, return_tensors="pt")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model, tokenizer = load_model("gpt2", device)
 
 # Train J_l matrices for every layer (cached on disk)
+texts = ["The capital of France is", "The capital of Japan is"]
+enc = tokenizer(texts, return_tensors="pt", padding=True)
 J = train_jacobian_lens(
     model,
-    tokenizer,
-    corpus_inputs=inputs,
+    enc["input_ids"],
+    attention_mask=enc["attention_mask"],
     target_layer=layer_indices(model)[-2],  # penultimate layer target
 )
 
+W_U = get_unembedding_matrix(model)
+norm = normalize_fn(model)
+
 # Read out layer 8 as if it were the final logits
-readout_probs = lens_readout(
-    model,
-    hidden_state=...,                       # h_8 from a forward pass
-    J_l=J[8],
-    tokenizer=tokenizer,
+residuals = cache_residuals(
+    model, enc["input_ids"], layers=[8], attention_mask=enc["attention_mask"]
 )
-print(tokenizer.decode(readout_probs.argmax(dim=-1)))
+h_8 = residuals[8][0, -1]  # last position of the first sequence
+top_ids, top_probs = lens_readout(h_8, J[8], W_U, norm)
+print(tokenizer.decode(top_ids.tolist()))
 
 # Decompose a hidden state into sparse J-space coefficients
-# Pass the pre-built dictionary V = W_U @ J_l ...
-coeffs, h_J, h_perp = decompose_jspace(
-    hidden_state=...,
-    V=V,
-    k=10,
-    non_negative=True,
-)
+# Pass the pre-built dictionary V = W_U @ J_l (rows are the J-lens vectors) ...
+V = W_U @ J[8]
+coeffs, h_J, h_perp = decompose_jspace(h_8, V=V, k=10)
 
 # ...or pass J_l and W_U and let the function build V for you.
-coeffs, h_J, h_perp = decompose_jspace(
-    hidden_state=...,
-    J_l=J[8],
-    W_U=get_unembedding_matrix(model),
-    k=10,
-    non_negative=True,
-)
+coeffs, h_J, h_perp = decompose_jspace(h_8, J_l=J[8], W_U=W_U, k=10)
 
 # Swap the J-space coordinates of two tokens and run the model with the edit
-edited = apply_intervention(
+paris_id = tokenizer.encode(" Paris", add_special_tokens=False)[0]
+london_id = tokenizer.encode(" London", add_special_tokens=False)[0]
+
+def swap(h: torch.Tensor, _pos: int) -> torch.Tensor:
+    return coordinate_swap(h, paris_id, london_id, V)
+
+edited_logits = apply_intervention(
     model,
-    inputs,
-    intervention=coordinate_swap,
+    swap,
     layer_band=(6, 10),
-    J=J,
-    tokenizer=tokenizer,
-    source_pos=2,
-    target_pos=4,
+    input_ids=enc["input_ids"],
+    attention_mask=enc["attention_mask"],
 )
 ```
 

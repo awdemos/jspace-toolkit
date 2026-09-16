@@ -8,6 +8,8 @@ import torch.nn.functional as F
 from scipy.stats import kurtosis as scipy_kurtosis
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
+from jspace import JSpaceError
+
 # Thresholds used to locate the workspace / motor-onset boundaries.
 ACCURACY_MOTOR_THRESHOLD = 0.8
 KURTOSIS_STD_MULTIPLIER = 0.5
@@ -40,6 +42,7 @@ def compute_discovery_metrics(
     norm_fn: Callable[[torch.Tensor], torch.Tensor],
     layers: list[int] | None = None,
     probe_ids: torch.Tensor | None = None,
+    attention_mask: torch.Tensor | None = None,
 ) -> dict[str, np.ndarray]:
     """Compute CKA, kurtosis, accuracy, and autocorrelation by layer.
 
@@ -47,8 +50,20 @@ def compute_discovery_metrics(
     J-Lens was trained only up to a target layer.  If `probe_ids` is provided,
     CKA is computed over only those token rows (matching the article's shared
     probe-token geometry); otherwise the full vocabulary is used.
+
+    Pass the tokenizer's ``attention_mask`` alongside ``corpus`` so padded
+    positions are excluded from the metrics; without it, pad targets are
+    filtered via ``tokenizer.pad_token_id`` where defined. When a mask is
+    provided it is forwarded to the model and all metrics are computed over
+    unmasked positions only.
     """
     from jspace.model_adapter import layer_indices
+
+    if attention_mask is not None and attention_mask.shape != corpus.shape:
+        raise JSpaceError(
+            f"attention_mask shape {tuple(attention_mask.shape)} does not match "
+            f"corpus shape {tuple(corpus.shape)}"
+        )
 
     device = next(model.parameters()).device
     if layers is None:
@@ -74,19 +89,33 @@ def compute_discovery_metrics(
 
     model.eval()
     with torch.no_grad():
-        corpus_batch = corpus[: min(corpus.shape[0], 32)].to(device)
-        full_outputs = model(corpus_batch, output_hidden_states=True, return_dict=True)
+        n_rows = min(corpus.shape[0], 32)
+        corpus_batch = corpus[:n_rows].to(device)
+        mask_batch = attention_mask[:n_rows].to(device) if attention_mask is not None else None
+        full_outputs = model(
+            corpus_batch,
+            attention_mask=mask_batch,
+            output_hidden_states=True,
+            return_dict=True,
+        )
         hidden_states = full_outputs.hidden_states
         targets = corpus_batch[:, 1:].contiguous()
 
     for idx, layer in enumerate(layers):
         h_last = hidden_states[layer + 1][:, :-1, :].reshape(-1, hidden_states[layer + 1].shape[-1])
         flat_targets = targets.reshape(-1)
-        valid = (flat_targets != tokenizer.pad_token_id).to(device)
+        if mask_batch is not None:
+            valid = mask_batch[:, 1:].reshape(-1).to(torch.float32)
+        else:
+            valid = (flat_targets != tokenizer.pad_token_id).to(device)
 
         logits = F.linear(norm_fn(h_last), W_U.to(device, torch.float32))
         probs = F.softmax(logits, dim=-1)
-        kurt[idx] = _excess_kurtosis(probs)
+        if mask_batch is not None:
+            keep = valid.bool()
+            kurt[idx] = _excess_kurtosis(probs[keep]) if bool(keep.any()) else float("nan")
+        else:
+            kurt[idx] = _excess_kurtosis(probs)
 
         preds = logits.argmax(dim=-1)
         correct = ((preds == flat_targets) & valid.bool()).float().sum()
@@ -94,8 +123,14 @@ def compute_discovery_metrics(
 
         top1 = preds.reshape(corpus_batch.shape[0], -1)
         shifted = torch.roll(top1, shifts=-1, dims=1)
-        matches = (top1[:, :-1] == shifted[:, :-1]).float()
-        autocorr[idx] = float(matches.mean())
+        matches = top1[:, :-1] == shifted[:, :-1]
+        if mask_batch is not None:
+            pair_valid = (mask_batch[:, 1:-1] & mask_batch[:, 2:]).bool()
+            autocorr[idx] = float(
+                (matches & pair_valid).float().sum() / (pair_valid.float().sum() + 1e-9)
+            )
+        else:
+            autocorr[idx] = float(matches.float().mean())
 
     return {"cka_block": cka, "kurtosis": kurt, "accuracy": acc, "autocorr": autocorr}
 
