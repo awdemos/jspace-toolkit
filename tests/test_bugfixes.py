@@ -147,6 +147,16 @@ def _wg_argv(tmp_path, corpus, *extra):
     ]
 
 
+def _tiny_gpt2(n_layer: int = 2) -> torch.nn.Module:
+    """In-process GPT-2 stand-in so CLI tests never hit the hub."""
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    config = GPT2Config(
+        n_layer=n_layer, n_head=1, n_embd=8, n_positions=8, n_ctx=8, vocab_size=16
+    )
+    return GPT2LMHeadModel(config)
+
+
 def test_workspace_geometry_probe_ids_error_precedes_model_load(tmp_path):
     """Malformed --probe-ids must fail before model loading or training."""
     corpus = tmp_path / "corpus.json"
@@ -179,12 +189,9 @@ def test_workspace_geometry_probe_ids_error_precedes_model_load(tmp_path):
 
 
 def test_workspace_geometry_rejects_single_layer_model(tmp_path, monkeypatch, capsys):
-    from transformers import GPT2Config, GPT2LMHeadModel
-
     import scripts.workspace_geometry as wg
 
-    config = GPT2Config(n_layer=1, n_head=1, n_embd=8, n_positions=8, n_ctx=8, vocab_size=16)
-    monkeypatch.setattr(wg, "load_model", lambda *a, **k: (GPT2LMHeadModel(config), object()))
+    monkeypatch.setattr(wg, "load_model", lambda *a, **k: (_tiny_gpt2(n_layer=1), object()))
     corpus = tmp_path / "corpus.json"
     corpus.write_text(json.dumps(["The cat sat."]))
     monkeypatch.setattr(sys, "argv", _wg_argv(tmp_path, corpus))
@@ -205,6 +212,7 @@ def test_workspace_geometry_rejects_out_of_range_target_layer(
         raise AssertionError("training must not run for an invalid --target-layer")
 
     monkeypatch.setattr(wg, "train_jacobian_lens", boom)
+    monkeypatch.setattr(wg, "load_model", lambda *a, **k: (_tiny_gpt2(), object()))
     corpus = tmp_path / "corpus.json"
     corpus.write_text(json.dumps(["The cat sat on the mat."]))
     monkeypatch.setattr(sys, "argv", _wg_argv(tmp_path, corpus, "--target-layer", bad_layer))
@@ -224,6 +232,9 @@ def test_workspace_geometry_rejects_out_of_range_probe_ids_before_training(
         raise AssertionError("training must not run for out-of-range --probe-ids")
 
     monkeypatch.setattr(wg, "train_jacobian_lens", boom)
+    monkeypatch.setattr(wg, "load_model", lambda *a, **k: (_tiny_gpt2(), object()))
+    ids = torch.ones(1, 4, dtype=torch.long)
+    monkeypatch.setattr(wg, "_load_corpus", lambda *a, **k: (ids, ids.clone()))
     corpus = tmp_path / "corpus.json"
     corpus.write_text(json.dumps(["The cat sat on the mat."]))
     monkeypatch.setattr(sys, "argv", _wg_argv(tmp_path, corpus, "--probe-ids", f"1,{10**9}"))
