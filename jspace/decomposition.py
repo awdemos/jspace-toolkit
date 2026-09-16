@@ -101,6 +101,9 @@ def jspace_occupancy(
     prev_error = float(np.linalg.norm(residual))
     selected: list[int] = []
     for k in range(max_k):
+        if prev_error == 0.0:
+            # Residual exhausted: no (k+1)-th vector can improve anything.
+            return k
         corr = V_np @ residual
         # Zero out (not -inf) already-selected atoms: the |corr| argmax below
         # would otherwise turn -inf into the winning entry.

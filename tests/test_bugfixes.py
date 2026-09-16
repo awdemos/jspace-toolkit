@@ -1,5 +1,9 @@
 """Regression tests for bug fixes (see commit history)."""
 
+import json
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 import torch
@@ -77,3 +81,165 @@ def test_apply_intervention_accepts_batched_inputs():
     )
     assert logits.shape[0] == 2
     assert logits.shape[1] == enc["input_ids"].shape[1]
+
+
+def test_inline_image_color_index_stays_in_palette():
+    """Near-white greys used to overflow to index 256 pre-fix (b05e14e)."""
+    from scripts.inline_image import _rgb_to_256
+
+    assert _rgb_to_256(255, 255, 255) == 231
+    assert _rgb_to_256(250, 250, 250) == 231
+    assert _rgb_to_256(248, 248, 248) == 231  # was 256 before the fix
+    assert _rgb_to_256(247, 247, 247) == 255
+    assert _rgb_to_256(255, 0, 0) == 196
+    for r in range(0, 256, 11):
+        for g in range(0, 256, 11):
+            for b in range(0, 256, 11):
+                assert 0 <= _rgb_to_256(r, g, b) <= 255
+
+
+def test_inline_image_render_escape_codes_bounded(tmp_path):
+    from PIL import Image
+
+    from scripts.inline_image import render
+
+    Image.new("RGB", (3, 2), (250, 250, 250)).save(tmp_path / "near_white.png")
+    out = render(str(tmp_path / "near_white.png"), width=3)
+    for seq in out.split("\033[38;5;")[1:]:
+        assert 0 <= int(seq.split("m")[0]) <= 255
+
+
+def test_inline_image_closes_image_handle(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from scripts import inline_image
+
+    Image.new("RGB", (2, 2), (10, 20, 30)).save(tmp_path / "t.png")
+    opened = []
+    real_open = Image.open
+
+    def spy(path):
+        handle = real_open(path)
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(inline_image.Image, "open", spy)
+    inline_image.render(str(tmp_path / "t.png"), width=2)
+
+    assert len(opened) == 1
+    assert opened[0].fp is None  # closed by the ``with`` block
+
+
+def _wg_argv(tmp_path, corpus, *extra):
+    return [
+        "prog",
+        "--model",
+        "sshleifer/tiny-gpt2",
+        "--corpus",
+        str(corpus),
+        "--workspace",
+        str(tmp_path),
+        "--cache-dir",
+        str(tmp_path / "cache"),
+        "--output-dir",
+        str(tmp_path / "out"),
+        *extra,
+    ]
+
+
+def _tiny_gpt2(n_layer: int = 2) -> torch.nn.Module:
+    """In-process GPT-2 stand-in so CLI tests never hit the hub."""
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    config = GPT2Config(
+        n_layer=n_layer, n_head=1, n_embd=8, n_positions=8, n_ctx=8, vocab_size=16
+    )
+    return GPT2LMHeadModel(config)
+
+
+def test_workspace_geometry_probe_ids_error_precedes_model_load(tmp_path):
+    """Malformed --probe-ids must fail before model loading or training."""
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(json.dumps(["The cat sat."]))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.workspace_geometry",
+            "--model",
+            "totally-bogus-model-name",
+            "--corpus",
+            str(corpus),
+            "--workspace",
+            str(tmp_path),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--probe-ids",
+            "1,2,x",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "--probe-ids" in result.stderr
+    # The allowlist error would name the model; it must never be reached.
+    assert "totally-bogus-model-name" not in result.stderr
+
+
+def test_workspace_geometry_rejects_single_layer_model(tmp_path, monkeypatch, capsys):
+    import scripts.workspace_geometry as wg
+
+    monkeypatch.setattr(wg, "load_model", lambda *a, **k: (_tiny_gpt2(n_layer=1), object()))
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(json.dumps(["The cat sat."]))
+    monkeypatch.setattr(sys, "argv", _wg_argv(tmp_path, corpus))
+
+    with pytest.raises(SystemExit) as exc:
+        wg.main()
+    assert exc.value.code == 1
+    assert "1 layer" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_layer", ["-1", "99"])
+def test_workspace_geometry_rejects_out_of_range_target_layer(
+    tmp_path, monkeypatch, capsys, bad_layer
+):
+    import scripts.workspace_geometry as wg
+
+    def boom(*a, **k):
+        raise AssertionError("training must not run for an invalid --target-layer")
+
+    monkeypatch.setattr(wg, "train_jacobian_lens", boom)
+    monkeypatch.setattr(wg, "load_model", lambda *a, **k: (_tiny_gpt2(), object()))
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(json.dumps(["The cat sat on the mat."]))
+    monkeypatch.setattr(sys, "argv", _wg_argv(tmp_path, corpus, "--target-layer", bad_layer))
+
+    with pytest.raises(SystemExit) as exc:
+        wg.main()
+    assert exc.value.code == 1
+    assert "out of range" in capsys.readouterr().err
+
+
+def test_workspace_geometry_rejects_out_of_range_probe_ids_before_training(
+    tmp_path, monkeypatch, capsys
+):
+    import scripts.workspace_geometry as wg
+
+    def boom(*a, **k):
+        raise AssertionError("training must not run for out-of-range --probe-ids")
+
+    monkeypatch.setattr(wg, "train_jacobian_lens", boom)
+    monkeypatch.setattr(wg, "load_model", lambda *a, **k: (_tiny_gpt2(), object()))
+    ids = torch.ones(1, 4, dtype=torch.long)
+    monkeypatch.setattr(wg, "_load_corpus", lambda *a, **k: (ids, ids.clone()))
+    corpus = tmp_path / "corpus.json"
+    corpus.write_text(json.dumps(["The cat sat on the mat."]))
+    monkeypatch.setattr(sys, "argv", _wg_argv(tmp_path, corpus, "--probe-ids", f"1,{10**9}"))
+
+    with pytest.raises(SystemExit) as exc:
+        wg.main()
+    assert exc.value.code == 1
+    assert "out of range" in capsys.readouterr().err

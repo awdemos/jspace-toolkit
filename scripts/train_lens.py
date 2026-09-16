@@ -10,7 +10,7 @@ from rich.panel import Panel
 from jspace import JSpaceError
 from jspace.jacobian_lens import train_jacobian_lens
 from jspace.model_adapter import layer_indices, load_model
-from jspace.utils import get_cache_dir, hash_file, model_fingerprint
+from jspace.utils import get_cache_dir, hash_file, model_fingerprint, resolve_model_revision
 from jspace.validation import validate_path, validate_workspace
 from jspace.viz import config_table, get_console, header_panel
 
@@ -103,6 +103,7 @@ def main():
             "need at least 2 to pick a penultimate target layer"
         )
     target_layer = args.target_layer if args.target_layer is not None else layers[-2]
+    resolved_rev = resolve_model_revision(args.model, args.model_revision)
     cache_dir = get_cache_dir(
         cache_base,
         model_fingerprint(
@@ -112,7 +113,7 @@ def main():
             max_positions=args.max_positions,
             dtype=args.dtype,
             output_dim_chunk=args.output_dim_chunk,
-            revision=args.model_revision,
+            revision=resolved_rev,
             corpus_hash=hash_file(corpus_path),
         ),
     )

@@ -21,7 +21,7 @@ from jspace.discovery import (
 )
 from jspace.jacobian_lens import train_jacobian_lens
 from jspace.model_adapter import get_unembedding_matrix, layer_indices, load_model, normalize_fn
-from jspace.utils import get_cache_dir, hash_file, model_fingerprint
+from jspace.utils import get_cache_dir, hash_file, model_fingerprint, resolve_model_revision
 from jspace.validation import validate_path, validate_workspace
 from jspace.viz import (
     config_table,
@@ -48,18 +48,21 @@ def _fail(message: str) -> SystemExit:
 DEFAULT_PROBE_COUNT = 4096
 
 
-def _parse_probe_ids(probe_ids_str: str, vocab_size: int) -> list[int]:
+def _parse_probe_ids(probe_ids_str: str) -> list[int]:
     """Parse a comma-separated list of probe token ids."""
     try:
-        ids = [int(x.strip()) for x in probe_ids_str.split(",")]
+        return [int(x.strip()) for x in probe_ids_str.split(",")]
     except ValueError as exc:
         raise JSpaceError(
             f"invalid --probe-ids {probe_ids_str!r}: expected comma-separated integers"
         ) from exc
+
+
+def _check_probe_ids_in_range(ids: list[int], vocab_size: int) -> None:
+    """Reject probe token ids outside [0, vocab_size)."""
     for token_id in ids:
         if not 0 <= token_id < vocab_size:
             raise JSpaceError(f"probe token_id {token_id} out of range (vocab_size={vocab_size})")
-    return ids
 
 
 def _default_probe_ids(tokenizer, n: int) -> list[int]:
@@ -106,7 +109,7 @@ def compute_cka_block(V_by_layer: dict[int, torch.Tensor]) -> np.ndarray:
     """Compute layer-by-layer CKA similarity matrix."""
     layers = sorted(V_by_layer.keys())
     n = len(layers)
-    cka = np.zeros((n, n), dtype=np.float64)
+    cka: np.ndarray = np.zeros((n, n), dtype=np.float64)
     for i, li in enumerate(jl_track(layers, "CKA block")):
         for j, lj in enumerate(layers):
             if j < i:
@@ -152,6 +155,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Fail fast on malformed probe ids before any model loading or training.
+    try:
+        probe_ids_list = _parse_probe_ids(args.probe_ids) if args.probe_ids is not None else None
+    except JSpaceError as exc:
+        raise _fail(str(exc)) from exc
+
     dtype = getattr(torch, args.dtype)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -171,15 +180,33 @@ def main() -> None:
         revision=args.model_revision,
         allow_unlisted=args.allow_unlisted_model,
     )
-    corpus, attn_mask = _load_corpus(corpus_path, tokenizer, args.max_positions)
     layers = layer_indices(model)
     if args.target_layer is None and len(layers) < 2:
         raise _fail(
             f"{args.model} has {len(layers)} layer(s); "
             "need at least 2 to pick a penultimate target layer"
         )
+    if args.target_layer is not None and not 0 <= args.target_layer < len(layers):
+        raise _fail(
+            f"--target-layer {args.target_layer} out of range for {args.model} "
+            f"({len(layers)} layers); expected 0 <= --target-layer < {len(layers)}"
+        )
     target_layer = args.target_layer if args.target_layer is not None else layers[-2]
 
+    corpus, attn_mask = _load_corpus(corpus_path, tokenizer, args.max_positions)
+
+    W_U = get_unembedding_matrix(model)
+    vocab_size = W_U.shape[0]
+    if probe_ids_list is not None:
+        try:
+            _check_probe_ids_in_range(probe_ids_list, vocab_size)
+        except JSpaceError as exc:
+            raise _fail(str(exc)) from exc
+    else:
+        probe_ids_list = _default_probe_ids(tokenizer, args.n_probes)
+    probe_ids = torch.tensor(probe_ids_list, dtype=torch.long)
+
+    resolved_rev = resolve_model_revision(args.model, args.model_revision)
     cache_dir = get_cache_dir(
         cache_base,
         model_fingerprint(
@@ -189,7 +216,7 @@ def main() -> None:
             max_positions=args.max_positions,
             dtype=args.dtype,
             output_dim_chunk=args.output_dim_chunk,
-            revision=args.model_revision,
+            revision=resolved_rev,
             corpus_hash=hash_file(corpus_path),
         ),
     )
@@ -220,17 +247,6 @@ def main() -> None:
         attention_mask=attn_mask,
     )
 
-    W_U = get_unembedding_matrix(model)
-    vocab_size = W_U.shape[0]
-    try:
-        if args.probe_ids is not None:
-            probe_ids_list = _parse_probe_ids(args.probe_ids, vocab_size)
-        else:
-            probe_ids_list = _default_probe_ids(tokenizer, args.n_probes)
-    except JSpaceError as exc:
-        raise _fail(str(exc)) from exc
-    probe_ids = torch.tensor(probe_ids_list, dtype=torch.long)
-
     console.print(f"[bold]Building token geometry for[/] {len(probe_ids_list)} probe tokens")
     V_by_layer: dict[int, torch.Tensor] = {}
     for layer in jl_track(sorted(J.keys()), "Building V_l"):
@@ -254,6 +270,7 @@ def main() -> None:
         normalize_fn(model),
         layers=layers_with_v,
         probe_ids=probe_ids,
+        attention_mask=attn_mask,
     )
     start, end = infer_workspace_boundaries(discovery_metrics)
 

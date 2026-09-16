@@ -1,6 +1,8 @@
+import pytest
 import torch
 
 from jspace.jacobian_lens import (
+    _attach_frozen_qk_hooks,
     _average_jacobian_for_layer,
     _base_model,
     _capture_h_l,
@@ -126,3 +128,8 @@ def test_future_position_averaging_uniform_over_triples(monkeypatch):
 
     expected = torch.eye(d_model, dtype=torch.float64) * expected_diag
     assert torch.allclose(J, expected, atol=1e-4)
+
+
+def test_frozen_qk_warns_when_no_projection_matches():
+    with pytest.warns(UserWarning, match="no query/key projections"):
+        _attach_frozen_qk_hooks(torch.nn.Linear(4, 4))
